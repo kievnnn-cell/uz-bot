@@ -1,242 +1,156 @@
+```python
+import os
 import telebot
-from telebot import types
-import sqlite3
-import time
-import threading
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-TOKEN = "8813064730:AAGLMW9yfAUJQzFxWXLgHo7aRIjaBm9ewx8"
+# =========================
+# TOKEN FROM RENDER
+# =========================
+TOKEN = os.getenv("TOKEN")
+
+if not TOKEN:
+    raise Exception("TOKEN is not set in environment variables")
+
 bot = telebot.TeleBot(TOKEN)
 
-# ================= DB =================
-
-conn = sqlite3.connect("bot.db", check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS watches (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id INTEGER,
-    train TEXT,
-    from_city TEXT,
-    to_city TEXT,
-    date TEXT
-)
-""")
-conn.commit()
-
-# ================= STATE =================
-
+# =========================
+# USER STATE
+# =========================
 user_state = {}
 
-CITIES = ["Kyiv", "Lviv", "Odesa", "Kharkiv", "Dnipro"]
+def get_state(chat_id):
+    if chat_id not in user_state:
+        user_state[chat_id] = {
+            "step": "from",
+            "from": None,
+            "to": None,
+            "date": None
+        }
 
-# ================= UI =================
+    return user_state[chat_id]
 
-def main_menu():
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("🔍 Search trains", callback_data="search"))
-    kb.add(types.InlineKeyboardButton("👀 Watches", callback_data="watches"))
-    return kb
+# =========================
+# KEYBOARDS
+# =========================
+def from_keyboard():
+    kb = InlineKeyboardMarkup()
 
-def cities_kb(step):
-    kb = types.InlineKeyboardMarkup()
-    for c in CITIES:
-        kb.add(types.InlineKeyboardButton(c, callback_data=f"city:{step}:{c}"))
-    return kb
-
-def back_kb():
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("⬅ Back", callback_data="back"))
-    return kb
-
-# ================= START =================
-
-@bot.message_handler(commands=['start'])
-def start(m):
-    user_state[m.chat.id] = {"step": "idle"}
-
-    bot.send_message(
-        m.chat.id,
-        "🚆 V8 Wizard UI\nStable flow engine ready",
-        reply_markup=main_menu()
+    kb.add(
+        InlineKeyboardButton("Kyiv", callback_data="from:Kyiv"),
+        InlineKeyboardButton("Lviv", callback_data="from:Lviv")
     )
 
-# ================= CALLBACK =================
+    return kb
 
-@bot.callback_query_handler(func=lambda c: True)
+
+def to_keyboard():
+    kb = InlineKeyboardMarkup()
+
+    kb.add(
+        InlineKeyboardButton("Kyiv", callback_data="to:Kyiv"),
+        InlineKeyboardButton("Lviv", callback_data="to:Lviv")
+    )
+
+    kb.add(
+        InlineKeyboardButton("↔️ Swap", callback_data="swap")
+    )
+
+    return kb
+
+# =========================
+# START
+# =========================
+@bot.message_handler(commands=['start'])
+def start(message):
+    s = get_state(message.chat.id)
+
+    s["step"] = "from"
+
+    bot.send_message(
+        message.chat.id,
+        "🚆 Выбери FROM:",
+        reply_markup=from_keyboard()
+    )
+
+# =========================
+# CALLBACKS
+# =========================
+@bot.callback_query_handler(func=lambda call: True)
 def callback(call):
-
     chat_id = call.message.chat.id
+    s = get_state(chat_id)
+
     data = call.data
 
-    state = user_state.get(chat_id, {"step": "idle"})
-
-    # -------- SEARCH START --------
-    if data == "search":
-        state = {"step": "from"}
-        user_state[chat_id] = state
+    # FROM
+    if data.startswith("from:"):
+        s["from"] = data.split(":")[1]
+        s["step"] = "to"
 
         bot.edit_message_text(
-            "📍 Select FROM city:",
+            f"FROM: {s['from']}\n\nВыбери TO:",
             chat_id,
             call.message.message_id,
-            reply_markup=cities_kb("from")
+            reply_markup=to_keyboard()
         )
 
-    # -------- BACK --------
-    elif data == "back":
-        user_state[chat_id] = {"step": "idle"}
+    # TO
+    elif data.startswith("to:"):
+        s["to"] = data.split(":")[1]
+        s["step"] = "date"
 
         bot.edit_message_text(
-            "🏠 Main menu",
+            f"🚆 {s['from']} → {s['to']}\n\n📅 Введи дату:",
             chat_id,
-            call.message.message_id,
-            reply_markup=main_menu()
+            call.message.message_id
         )
 
-    # -------- CITY SELECT --------
-    elif data.startswith("city:"):
+    # SWAP
+    elif data == "swap":
+        s["from"], s["to"] = s["to"], s["from"]
 
-        _, step, city = data.split(":")
+        bot.answer_callback_query(
+            call.id,
+            "Маршрут изменён"
+        )
 
-        state = user_state.get(chat_id, {"step": "idle"})
+        bot.edit_message_text(
+            f"🔄 {s['from']} → {s['to']}",
+            chat_id,
+            call.message.message_id,
+            reply_markup=to_keyboard()
+        )
 
-        # FROM
-        if step == "from":
-
-            state["from"] = city
-            state["step"] = "to"
-            user_state[chat_id] = state
-
-            bot.edit_message_text(
-                f"📍 FROM: {city}\n\nSelect TO city:",
-                chat_id,
-                call.message.message_id,
-                reply_markup=cities_kb("to")
-            )
-
-        # TO
-        elif step == "to":
-
-            if "from" not in state:
-                bot.answer_callback_query(call.id, "Start over")
-                return
-
-            if city == state["from"]:
-                bot.answer_callback_query(call.id, "Choose different city")
-                return
-
-            state["to"] = city
-            state["step"] = "date"
-            user_state[chat_id] = state
-
-            bot.send_message(
-                chat_id,
-                f"📍 FROM: {state['from']}\n"
-                f"📍 TO: {state['to']}\n\n"
-                "📅 Send date (YYYY-MM-DD)"
-            )
-
-    # -------- WATCH LIST --------
-    elif data == "watches":
-
-        cursor.execute("""
-            SELECT train, from_city, to_city, date
-            FROM watches
-            WHERE chat_id=?
-        """, (chat_id,))
-
-        rows = cursor.fetchall()
-
-        if not rows:
-            bot.answer_callback_query(call.id, "No watches")
-            return
-
-        text = "👀 Your watches:\n\n"
-
-        for r in rows:
-            text += f"{r[0]} {r[1]} → {r[2]} | {r[3]}\n"
-
-        bot.send_message(chat_id, text)
-
-# ================= DATE INPUT =================
-
+# =========================
+# DATE INPUT
+# =========================
 @bot.message_handler(func=lambda m: True)
-def handle_text(m):
+def text_handler(message):
+    s = get_state(message.chat.id)
 
-    chat_id = m.chat.id
-    text = m.text.strip()
+    if s["step"] == "date":
+        s["date"] = message.text
 
-    if chat_id not in user_state:
-        return
-
-    state = user_state[chat_id]
-
-    if state.get("step") != "date":
-        return
-
-    # fake trains (stable layer)
-    trains = [
-        {"num": "741К", "time": "08:30 → 14:45"},
-        {"num": "009П", "time": "10:15 → 16:40"},
-        {"num": "106Л", "time": "22:10 → 05:55"},
-    ]
-
-    msg = f"🚆 {state['from']} → {state['to']}\n📅 {text}\n\n"
-
-    kb = types.InlineKeyboardMarkup()
-
-    for t in trains:
-        msg += f"{t['num']} | {t['time']}\n"
-
-        kb.add(
-            types.InlineKeyboardButton(
-                f"👀 Watch {t['num']}",
-                callback_data=f"watch:{t['num']}:{state['from']}:{state['to']}:{text}"
-            )
+        bot.send_message(
+            message.chat.id,
+            f"🚆 SEARCH STARTED\n\n"
+            f"FROM: {s['from']}\n"
+            f"TO: {s['to']}\n"
+            f"DATE: {s['date']}"
         )
 
-    kb.add(types.InlineKeyboardButton("🏠 Menu", callback_data="back"))
-
-    bot.send_message(chat_id, msg, reply_markup=kb)
-
-    state["step"] = "idle"
-    user_state[chat_id] = state
-
-# ================= WATCH =================
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("watch:"))
-def watch(call):
-
-    _, train, f, t, d = call.data.split(":")
-
-    cursor.execute("""
-        INSERT INTO watches(chat_id, train, from_city, to_city, date)
-        VALUES (?, ?, ?, ?, ?)
-    """, (call.message.chat.id, train, f, t, d))
-
-    conn.commit()
-
-    bot.answer_callback_query(call.id, "Watching started 👀")
-
-# ================= ENGINE =================
-
-def engine():
-    while True:
-        time.sleep(30)
-
-        cursor.execute("SELECT chat_id, train FROM watches")
-        rows = cursor.fetchall()
-
-        for chat_id, train in rows:
-            if int(time.time()) % 60 == 0:
-                bot.send_message(chat_id, f"🚆 V8 monitoring {train}")
-
-threading.Thread(target=engine, daemon=True).start()
-
-print("V8 Wizard UI running 🚆")
-bot.infinity_polling()
-
+# =========================
+# RUN
+# =========================
 if __name__ == "__main__":
-    print("BOT STARTED")
-    bot.infinity_polling()
+    print("BOT STARTED 🚆")
+
+    # remove old webhook
+    bot.remove_webhook()
+
+    # stable polling for Render
+    bot.infinity_polling(
+        timeout=30,
+        long_polling_timeout=30
+    )
+```
