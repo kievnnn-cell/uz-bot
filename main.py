@@ -1,145 +1,41 @@
 import os
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from flask import Flask, request
 
-# =========================
-# TOKEN (Render ENV)
-# =========================
 TOKEN = os.getenv("TOKEN")
-
-print("🔍 CHECK TOKEN LOADED:", TOKEN is not None)
-
-if not TOKEN:
-    print("❌ TOKEN IS EMPTY - check Render Environment Variables")
-    raise Exception("TOKEN is not set in environment variables")
-
-print("✅ TOKEN LOADED SUCCESSFULLY")
-
 bot = telebot.TeleBot(TOKEN)
 
-# =========================
-# FIX: Telegram polling conflict
-# =========================
-try:
-    bot.remove_webhook()
-    print("✅ Webhook removed")
-except Exception as e:
-    print("⚠️ Webhook remove error:", e)
+app = Flask(__name__)
 
-# =========================
-# USER STATE
-# =========================
-user_state = {}
+print("BOT STARTED")
 
-def get_state(chat_id):
-    if chat_id not in user_state:
-        user_state[chat_id] = {
-            "step": "from",
-            "from": None,
-            "to": None,
-            "date": None
-        }
-    return user_state[chat_id]
-
-# =========================
-# KEYBOARDS
-# =========================
-def from_keyboard():
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("Kyiv", callback_data="from:Kyiv"),
-        InlineKeyboardButton("Lviv", callback_data="from:Lviv")
-    )
-    return kb
-
-def to_keyboard():
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("Kyiv", callback_data="to:Kyiv"),
-        InlineKeyboardButton("Lviv", callback_data="to:Lviv")
-    )
-    kb.add(
-        InlineKeyboardButton("↔️ Swap", callback_data="swap")
-    )
-    return kb
-
-# =========================
-# START
-# =========================
+# --- тест команда ---
 @bot.message_handler(commands=['start'])
 def start(message):
-    s = get_state(message.chat.id)
-    s["step"] = "from"
+    bot.send_message(message.chat.id, "Бот работает через webhook 🚀")
 
-    bot.send_message(
-        message.chat.id,
-        "🚆 Выбери FROM:",
-        reply_markup=from_keyboard()
-    )
+# --- webhook endpoint ---
+@app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "OK", 200
 
-# =========================
-# CALLBACK HANDLER
-# =========================
-@bot.callback_query_handler(func=lambda call: True)
-def callback(call):
-    chat_id = call.message.chat.id
-    s = get_state(chat_id)
-    data = call.data
 
-    if data.startswith("from:"):
-        s["from"] = data.split(":")[1]
-        s["step"] = "to"
+# --- health check (Render любит это) ---
+@app.route("/")
+def index():
+    return "Bot is alive", 200
 
-        bot.edit_message_text(
-            f"FROM: {s['from']}\nВыбери TO:",
-            chat_id,
-            call.message.message_id,
-            reply_markup=to_keyboard()
-        )
 
-    elif data.startswith("to:"):
-        s["to"] = data.split(":")[1]
-        s["step"] = "date"
-
-        bot.edit_message_text(
-            f"{s['from']} → {s['to']}\nВведи дату:",
-            chat_id,
-            call.message.message_id
-        )
-
-    elif data == "swap":
-        s["from"], s["to"] = s["to"], s["from"]
-
-        bot.answer_callback_query(call.id, "Swapped")
-
-        bot.edit_message_text(
-            f"🔄 {s['from']} → {s['to']}",
-            chat_id,
-            call.message.message_id,
-            reply_markup=to_keyboard()
-        )
-
-# =========================
-# TEXT HANDLER
-# =========================
-@bot.message_handler(func=lambda m: True)
-def text_handler(message):
-    s = get_state(message.chat.id)
-
-    if s["step"] == "date":
-        s["date"] = message.text
-
-        bot.send_message(
-            message.chat.id,
-            "🚆 SEARCH\n" +
-            s["from"] + " → " + s["to"] +
-            "\n📅 " + s["date"]
-        )
-
-# =========================
-# RUN
-# =========================
 if __name__ == "__main__":
-    print("🚆 BOT STARTING...")
+    PORT = int(os.environ.get("PORT", 5000))
 
-    bot.infinity_polling()
+    # webhook URL (ВАЖНО: Render URL)
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+    bot.remove_webhook()
+    bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
+
+    app.run(host="0.0.0.0", port=PORT)
