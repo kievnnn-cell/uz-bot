@@ -2,9 +2,6 @@ import os
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# =========================
-# TOKEN FROM RENDER
-# =========================
 TOKEN = os.getenv("TOKEN")
 
 if not TOKEN:
@@ -12,17 +9,11 @@ if not TOKEN:
 
 bot = telebot.TeleBot(TOKEN)
 
-# =========================
-# IMPORTANT FIX (409 ERROR)
-# =========================
+# FIX TELEGRAM 409
 bot.remove_webhook()
-try:
-    bot.stop_polling()
-except:
-    pass
 
 # =========================
-# USER STATE
+# STATE
 # =========================
 user_state = {}
 
@@ -73,7 +64,7 @@ def start(message):
     )
 
 # =========================
-# CALLBACK
+# CALLBACKS
 # =========================
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
@@ -86,4 +77,54 @@ def callback(call):
         s["step"] = "to"
 
         bot.edit_message_text(
-            f"
+            "FROM selected. Choose TO:",
+            chat_id,
+            call.message.message_id,
+            reply_markup=to_keyboard()
+        )
+
+    elif data.startswith("to:"):
+        s["to"] = data.split(":")[1]
+        s["step"] = "date"
+
+        bot.edit_message_text(
+            "Route selected. Now send date (e.g. 2026-06-01):",
+            chat_id,
+            call.message.message_id
+        )
+
+    elif data == "swap":
+        s["from"], s["to"] = s["to"], s["from"]
+
+        bot.answer_callback_query(call.id, "Swapped")
+
+        bot.edit_message_text(
+            "Route swapped. Choose again:",
+            chat_id,
+            call.message.message_id,
+            reply_markup=to_keyboard()
+        )
+
+# =========================
+# TEXT
+# =========================
+@bot.message_handler(func=lambda m: True)
+def text_handler(message):
+    s = get_state(message.chat.id)
+
+    if s["step"] == "date":
+        s["date"] = message.text
+
+        bot.send_message(
+            message.chat.id,
+            "SEARCH:\n" +
+            s['from'] + " → " + s['to'] + "\nDATE: " + s['date']
+        )
+
+# =========================
+# RUN
+# =========================
+if __name__ == "__main__":
+    print("BOT STARTED")
+
+    bot.infinity_polling()
