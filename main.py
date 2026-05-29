@@ -1,10 +1,9 @@
-```python
 import os
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # =========================
-# TOKEN FROM RENDER
+# TOKEN FROM RENDER ENV
 # =========================
 TOKEN = os.getenv("TOKEN")
 
@@ -26,7 +25,6 @@ def get_state(chat_id):
             "to": None,
             "date": None
         }
-
     return user_state[chat_id]
 
 # =========================
@@ -34,27 +32,21 @@ def get_state(chat_id):
 # =========================
 def from_keyboard():
     kb = InlineKeyboardMarkup()
-
     kb.add(
         InlineKeyboardButton("Kyiv", callback_data="from:Kyiv"),
         InlineKeyboardButton("Lviv", callback_data="from:Lviv")
     )
-
     return kb
-
 
 def to_keyboard():
     kb = InlineKeyboardMarkup()
-
     kb.add(
         InlineKeyboardButton("Kyiv", callback_data="to:Kyiv"),
         InlineKeyboardButton("Lviv", callback_data="to:Lviv")
     )
-
     kb.add(
         InlineKeyboardButton("↔️ Swap", callback_data="swap")
     )
-
     return kb
 
 # =========================
@@ -63,7 +55,6 @@ def to_keyboard():
 @bot.message_handler(commands=['start'])
 def start(message):
     s = get_state(message.chat.id)
-
     s["step"] = "from"
 
     bot.send_message(
@@ -73,46 +64,39 @@ def start(message):
     )
 
 # =========================
-# CALLBACKS
+# CALLBACK HANDLER
 # =========================
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
     chat_id = call.message.chat.id
     s = get_state(chat_id)
-
     data = call.data
 
-    # FROM
     if data.startswith("from:"):
         s["from"] = data.split(":")[1]
         s["step"] = "to"
 
         bot.edit_message_text(
-            f"FROM: {s['from']}\n\nВыбери TO:",
+            f"FROM: {s['from']}\nВыбери TO:",
             chat_id,
             call.message.message_id,
             reply_markup=to_keyboard()
         )
 
-    # TO
     elif data.startswith("to:"):
         s["to"] = data.split(":")[1]
         s["step"] = "date"
 
         bot.edit_message_text(
-            f"🚆 {s['from']} → {s['to']}\n\n📅 Введи дату:",
+            f"{s['from']} → {s['to']}\nВведи дату:",
             chat_id,
             call.message.message_id
         )
 
-    # SWAP
     elif data == "swap":
         s["from"], s["to"] = s["to"], s["from"]
 
-        bot.answer_callback_query(
-            call.id,
-            "Маршрут изменён"
-        )
+        bot.answer_callback_query(call.id, "Swapped")
 
         bot.edit_message_text(
             f"🔄 {s['from']} → {s['to']}",
@@ -122,7 +106,7 @@ def callback(call):
         )
 
 # =========================
-# DATE INPUT
+# TEXT HANDLER (DATE)
 # =========================
 @bot.message_handler(func=lambda m: True)
 def text_handler(message):
@@ -133,24 +117,18 @@ def text_handler(message):
 
         bot.send_message(
             message.chat.id,
-            f"🚆 SEARCH STARTED\n\n"
-            f"FROM: {s['from']}\n"
-            f"TO: {s['to']}\n"
-            f"DATE: {s['date']}"
+            f"🚆 SEARCH\n{s['from']} → {s['to']}\n📅 {s['date']}"
         )
 
 # =========================
-# RUN
+# RUN BOT
 # =========================
 if __name__ == "__main__":
     print("BOT STARTED 🚆")
 
-    # remove old webhook
     bot.remove_webhook()
 
-    # stable polling for Render
     bot.infinity_polling(
         timeout=30,
         long_polling_timeout=30
     )
-```
