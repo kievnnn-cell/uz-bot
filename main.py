@@ -2,18 +2,32 @@ import os
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+# =========================
+# TOKEN (Render ENV)
+# =========================
 TOKEN = os.getenv("TOKEN")
 
+print("🔍 CHECK TOKEN LOADED:", TOKEN is not None)
+
 if not TOKEN:
+    print("❌ TOKEN IS EMPTY - check Render Environment Variables")
     raise Exception("TOKEN is not set in environment variables")
+
+print("✅ TOKEN LOADED SUCCESSFULLY")
 
 bot = telebot.TeleBot(TOKEN)
 
-# FIX TELEGRAM 409
-bot.remove_webhook()
+# =========================
+# FIX: Telegram polling conflict
+# =========================
+try:
+    bot.remove_webhook()
+    print("✅ Webhook removed")
+except Exception as e:
+    print("⚠️ Webhook remove error:", e)
 
 # =========================
-# STATE
+# USER STATE
 # =========================
 user_state = {}
 
@@ -64,7 +78,7 @@ def start(message):
     )
 
 # =========================
-# CALLBACKS
+# CALLBACK HANDLER
 # =========================
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
@@ -77,7 +91,7 @@ def callback(call):
         s["step"] = "to"
 
         bot.edit_message_text(
-            "FROM selected. Choose TO:",
+            f"FROM: {s['from']}\nВыбери TO:",
             chat_id,
             call.message.message_id,
             reply_markup=to_keyboard()
@@ -88,7 +102,7 @@ def callback(call):
         s["step"] = "date"
 
         bot.edit_message_text(
-            "Route selected. Now send date (e.g. 2026-06-01):",
+            f"{s['from']} → {s['to']}\nВведи дату:",
             chat_id,
             call.message.message_id
         )
@@ -99,14 +113,14 @@ def callback(call):
         bot.answer_callback_query(call.id, "Swapped")
 
         bot.edit_message_text(
-            "Route swapped. Choose again:",
+            f"🔄 {s['from']} → {s['to']}",
             chat_id,
             call.message.message_id,
             reply_markup=to_keyboard()
         )
 
 # =========================
-# TEXT
+# TEXT HANDLER
 # =========================
 @bot.message_handler(func=lambda m: True)
 def text_handler(message):
@@ -117,14 +131,15 @@ def text_handler(message):
 
         bot.send_message(
             message.chat.id,
-            "SEARCH:\n" +
-            s['from'] + " → " + s['to'] + "\nDATE: " + s['date']
+            "🚆 SEARCH\n" +
+            s["from"] + " → " + s["to"] +
+            "\n📅 " + s["date"]
         )
 
 # =========================
 # RUN
 # =========================
 if __name__ == "__main__":
-    print("BOT STARTED")
+    print("🚆 BOT STARTING...")
 
     bot.infinity_polling()
