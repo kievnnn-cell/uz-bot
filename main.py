@@ -3,7 +3,7 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # =========================
-# TOKEN FROM RENDER ENV
+# TOKEN FROM RENDER
 # =========================
 TOKEN = os.getenv("TOKEN")
 
@@ -11,6 +11,15 @@ if not TOKEN:
     raise Exception("TOKEN is not set in environment variables")
 
 bot = telebot.TeleBot(TOKEN)
+
+# =========================
+# IMPORTANT FIX (409 ERROR)
+# =========================
+bot.remove_webhook()
+try:
+    bot.stop_polling()
+except:
+    pass
 
 # =========================
 # USER STATE
@@ -64,7 +73,7 @@ def start(message):
     )
 
 # =========================
-# CALLBACK HANDLER
+# CALLBACK
 # =========================
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
@@ -77,58 +86,4 @@ def callback(call):
         s["step"] = "to"
 
         bot.edit_message_text(
-            f"FROM: {s['from']}\nВыбери TO:",
-            chat_id,
-            call.message.message_id,
-            reply_markup=to_keyboard()
-        )
-
-    elif data.startswith("to:"):
-        s["to"] = data.split(":")[1]
-        s["step"] = "date"
-
-        bot.edit_message_text(
-            f"{s['from']} → {s['to']}\nВведи дату:",
-            chat_id,
-            call.message.message_id
-        )
-
-    elif data == "swap":
-        s["from"], s["to"] = s["to"], s["from"]
-
-        bot.answer_callback_query(call.id, "Swapped")
-
-        bot.edit_message_text(
-            f"🔄 {s['from']} → {s['to']}",
-            chat_id,
-            call.message.message_id,
-            reply_markup=to_keyboard()
-        )
-
-# =========================
-# TEXT HANDLER (DATE)
-# =========================
-@bot.message_handler(func=lambda m: True)
-def text_handler(message):
-    s = get_state(message.chat.id)
-
-    if s["step"] == "date":
-        s["date"] = message.text
-
-        bot.send_message(
-            message.chat.id,
-            f"🚆 SEARCH\n{s['from']} → {s['to']}\n📅 {s['date']}"
-        )
-
-# =========================
-# RUN BOT
-# =========================
-if __name__ == "__main__":
-    print("BOT STARTED 🚆")
-
-    bot.remove_webhook()
-
-    bot.infinity_polling(
-        timeout=30,
-        long_polling_timeout=30
-    )
+            f"
