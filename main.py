@@ -44,4 +44,5 @@ def parse(text: str):
     route = text.split("№")[-1].split(",")[0]
     parts = re.split(r"[–-]", route)
 
-    if len(parts
+    if len(parts) < 2:
+    return None
