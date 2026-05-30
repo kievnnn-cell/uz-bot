@@ -12,66 +12,40 @@ if not BOT_TOKEN:
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# -------------------
-# FLASK
-# -------------------
+# ---------------- FLASK ----------------
 @app.route("/")
 def home():
     return "BOT RUNNING 🚆", 200
 
 
-# -------------------
-# HANDLERS
-# -------------------
+# ---------------- HANDLERS ----------------
 @bot.message_handler(commands=["start"])
 def start(message):
     bot.send_message(
         message.chat.id,
-        "Привет! Я бот маршрутов 🚆\nНапиши /help"
+        "Привет! Я бот маршрутов 🚆"
     )
 
 
-@bot.message_handler(commands=["help"])
-def help_cmd(message):
-    bot.send_message(message.chat.id, "Я помогу найти маршрут 🚆")
-
-
-# -------------------
-# BOT LOOP (FIXED)
-# -------------------
+# ---------------- BOT ----------------
 def run_bot():
     print("BOT THREAD STARTED")
+    print("STARTING POLLING 🚆")
 
-    try:
-        print("REMOVING WEBHOOK...")
+    while True:
+        try:
+            bot.infinity_polling(
+                skip_pending=True,
+                timeout=10,
+                long_polling_timeout=10
+            )
 
-        bot.remove_webhook()
-        time.sleep(2)
-
-        print("WEBHOOK REMOVED")
-        print("STARTING POLLING 🚆")
-
-        # ВАЖНО: try/except ВНУТРИ polling
-        while True:
-            try:
-                bot.infinity_polling(
-                    skip_pending=True,
-                    timeout=20,
-                    long_polling_timeout=20
-                )
-            except Exception as e:
-                print("POLLING ERROR:", e)
-                time.sleep(5)
-
-    except Exception as e:
-        print("FATAL BOT ERROR:", e)
-        time.sleep(5)
-        run_bot()
+        except Exception as e:
+            print("POLLING ERROR:", e)
+            time.sleep(3)
 
 
-# -------------------
-# MAIN
-# -------------------
+# ---------------- MAIN ----------------
 if __name__ == "__main__":
     print("BOOT INIT")
 
