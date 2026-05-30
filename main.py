@@ -1,7 +1,7 @@
 import os
 import logging
-import httpx
 import re
+import httpx
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
@@ -22,95 +22,122 @@ app = Application.builder().token(TOKEN).build()
 
 # ---------------- START ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚆 Отправь: поезд №81 Киев–Ивано-Франковск, купе")
-
-
-# ---------------- UZ API HELPERS ----------------
-
-async def find_station(client, name: str):
-    """Поиск станции в УЗ API"""
-    r = await client.post(
-        f"{UZ_API}/purchase/station/{name[:3]}",
-        data={}
+    await update.message.reply_text(
+        "🚆 Введи:\n"
+        "поезд №81 Киев–Ивано-Франковск, купе, 31.05.2026"
     )
-    data = r.json()
-    if "value" in data and data["value"]:
-        return data["value"][0]["station_id"], data["value"][0]["title"]
-    return None, None
 
 
-async def search_trains(from_id, to_id):
-    """Поиск поездов"""
-    async with httpx.AsyncClient() as client:
+# ---------------- PARSER (STRICT) ----------------
+def parse(text: str):
+    """
+    Формат:
+    поезд №81 Киев–Ивано-Франковск, купе, 31.05.2026
+    """
+
+    train_number = None
+    wagon = None
+    date = None
+    from_city = None
+    to_city = None
+
+    # номер поезда
+    m = re.search(r"№\s*(\d+)", text)
+    if m:
+        train_number = m.group(1)
+
+    # дата
+    d = re.search(r"(\d{2}\.\d{2}\.\d{4})", text)
+    if d:
+        date = d.group(1)
+
+    # вагон
+    if "купе" in text.lower():
+        wagon = "купе"
+    elif "плацкарт" in text.lower():
+        wagon = "плацкарт"
+
+    # маршрут
+    route_match = re.search(r"№\s*\d+\s*(.+)", text)
+    if route_match:
+        route = route_match.group(1)
+        route = route.split(",")[0]
+        parts = re.split(r"[–-]", route)
+
+        if len(parts) >= 2:
+            from_city = parts[0].strip()
+            to_city = parts[1].strip()
+
+    return train_number, from_city, to_city, wagon, date
+
+
+# ---------------- UZ SEARCH ----------------
+async def search_uz(from_city, to_city, date):
+    async with httpx.AsyncClient(timeout=20) as client:
         r = await client.post(
             "https://booking.uz.gov.ua/en/purchase/search/",
             data={
-                "from": from_id,
-                "to": to_id,
-                "date": "30.05.2026"
+                "from": from_city,
+                "to": to_city,
+                "date": date
             }
         )
         return r.json()
 
 
-# ---------------- PARSE INPUT ----------------
-
-def parse(text):
-    number = re.search(r"№\s*(\d+)", text)
-    train_number = number.group(1) if number else None
-
-    route = text.split("№")[-1] if "№" in text else text
-
-    parts = re.split(r"[-–]", route)
-    if len(parts) >= 2:
-        return train_number, parts[0].strip(), parts[1].split(",")[0].strip()
-
-    return train_number, None, None
-
-
-# ---------------- MAIN HANDLER ----------------
+# ---------------- HANDLER ----------------
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     logger.info(f"INPUT: {text}")
 
-    train_number, from_city, to_city = parse(text)
+    train_number, from_city, to_city, wagon, date = parse(text)
 
-    async with httpx.AsyncClient() as client:
-        from_id, from_name = await find_station(client, from_city)
-        to_id, to_name = await find_station(client, to_city)
-
-        if not from_id or not to_id:
-            await update.message.reply_text("❌ Не нашёл станции")
-            return
-
-        result = await client.post(
-            "https://booking.uz.gov.ua/en/purchase/search/",
-            data={
-                "from": from_id,
-                "to": to_id,
-                "date": "30.05.2026"
-            }
-        )
-
-        data = result.json()
-
-    # ---------------- RESPONSE ----------------
-    if "value" not in data:
-        await update.message.reply_text("❌ Нет данных УЗ")
+    if not all([from_city, to_city, date]):
+        await update.message.reply_text("❌ Неправильный формат запроса")
         return
 
-    msg = "🚆 Результаты УЗ:\n\n"
+    try:
+        data = await search_uz(from_city, to_city, date)
+    except Exception as e:
+        logger.error(str(e))
+        await update.message.reply_text("❌ Ошибка УЗ API")
+        return
 
-    for train in data["value"][:5]:
-        msg += f"Поезд {train.get('num')} | {train.get('from')} → {train.get('to')}\n"
+    if "value" not in data:
+        await update.message.reply_text("❌ Нет данных")
+        return
+
+    # ---------------- FILTER ----------------
+    result_msg = "🚆 Найдено:\n\n"
+    found = False
+
+    for train in data["value"]:
+        num = str(train.get("num"))
+
+        # фильтр по номеру поезда (ВАЖНО)
+        if train_number and num != train_number:
+            continue
+
+        found = True
+        result_msg += f"🚆 Поезд №{num}\n"
+        result_msg += f"{train.get('from')} → {train.get('to')}\n"
 
         if "types" in train:
             for t in train["types"]:
-                msg += f"  - {t.get('title')}: {t.get('places', 'нет мест')}\n"
+                title = t.get("title", "").lower()
 
-        msg += "\n"
+                # фильтр по вагону
+                if wagon and wagon not in title:
+                    continue
 
-    await update.message.reply_text(msg)
+                result_msg += f"  • {t.get('title')}: {t.get('places')}\n"
+
+        result_msg += "\n"
+
+    if not found:
+        result_msg = "❌ По этому запросу ничего не найдено"
+
+    await update.message.reply_text(result_msg)
 
 
 # ---------------- WEBHOOK ----------------
