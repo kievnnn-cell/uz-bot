@@ -1,3 +1,5 @@
+print("TOKEN:", TOKEN)
+print("WEBHOOK:", WEBHOOK_URL)
 import os
 import re
 import telebot
