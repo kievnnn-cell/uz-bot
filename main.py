@@ -1,113 +1,69 @@
 import os
 import logging
-import time
+from flask import Flask, request
+
 from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ======================
-# CONFIG
-# ======================
-TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # optional
-PORT = int(os.getenv("PORT", "8080"))
-USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
+BASE_URL = os.getenv("BASE_URL")
 
-if not TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set in environment variables")
+logging.basicConfig(level=logging.INFO)
 
-# ======================
-# LOGGING (ROBUST)
-# ======================
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger("bot")
+app = Flask(__name__)
 
-# ======================
-# HANDLERS
-# ======================
+# ===== BOT INIT =====
+application = Application.builder().token(BOT_TOKEN).build()
+
+
+# ===== SIMPLE COMMAND =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await update.message.reply_text("🤖 Бот запущен и работает стабильно.")
-    except Exception as e:
-        logger.error(f"/start error: {e}")
+    await update.message.reply_text("🚆 Монитор УЗ активен")
 
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await update.message.reply_text("ℹ️ Просто отправь сообщение — я его повторю.")
-    except Exception as e:
-        logger.error(f"/help error: {e}")
+# ===== PARSER COMMAND =====
+async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.lower()
+
+    # пример: "поезд №81 Киев–Ивано-Франковск, купе"
+    if "купе" in text:
+        await update.message.reply_text("🔎 Ищу купе по указанному поезду...")
+    else:
+        await update.message.reply_text("Формат: поезд №81 Киев–Ивано-Франковск, купе")
 
 
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if update.message and update.message.text:
-            await update.message.reply_text(update.message.text)
-    except Exception as e:
-        logger.error(f"echo error: {e}")
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, parse))
 
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.error("Exception while handling update:", exc_info=context.error)
-    # не падаем никогда
+# ===== FLASK WEBHOOK =====
+@app.route(WEBHOOK_PATH, methods=["POST"])
+def webhook():
+    data = request.get_json(force=True)
+    update = Update.de_json(data, application.bot)
+    application.update_queue.put_nowait(update)
+    return "ok"
 
 
-# ======================
-# MAIN STARTUP
-# ======================
-def main():
-    while True:
-        try:
-            logger.info("Starting bot...")
-
-            app = Application.builder().token(TOKEN).build()
-
-            # handlers
-            app.add_handler(CommandHandler("start", start))
-            app.add_handler(CommandHandler("help", help_cmd))
-            app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
-
-            app.add_error_handler(error_handler)
-
-            # ======================
-            # WEBHOOK MODE
-            # ======================
-            if USE_WEBHOOK and WEBHOOK_URL:
-                logger.info("Running in WEBHOOK mode")
-
-                app.run_webhook(
-                    listen="0.0.0.0",
-                    port=PORT,
-                    url_path=TOKEN,
-                    webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
-                )
-
-            # ======================
-            # POLLING MODE
-            # ======================
-            else:
-                logger.info("Running in POLLING mode")
-
-                app.run_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
-                )
-
-        except Exception as e:
-            logger.critical(f"BOT CRASHED: {e}")
-
-            # авто-рестарт через 5 секунд
-            time.sleep(5)
-            logger.info("Restarting bot...")
+@app.route("/")
+def home():
+    return "BOT RUNNING"
 
 
+# ===== STARTUP =====
 if __name__ == "__main__":
-    main()
+    import asyncio
+
+    async def run():
+        await application.initialize()
+        await application.start()
+
+        webhook_url = BASE_URL + WEBHOOK_PATH
+        await application.bot.set_webhook(webhook_url)
+
+        logging.info(f"Webhook set: {webhook_url}")
+
+        app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+    asyncio.run(run())
