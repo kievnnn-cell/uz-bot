@@ -1,6 +1,69 @@
 import os
 import time
 import telebot
+from flask import Flask, request
+
+TOKEN = os.getenv("TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+bot = telebot.TeleBot(TOKEN, threaded=False)
+app = Flask(__name__)
+
+# ---------------- DEBUG WEBHOOK ----------------
+def fix_webhook():
+    url = f"{WEBHOOK_URL}/{TOKEN}"
+
+    try:
+        info = bot.get_webhook_info()
+        print("CURRENT WEBHOOK:", info.url)
+
+        if info.url != url:
+            print("FIXING WEBHOOK...")
+            bot.remove_webhook()
+            time.sleep(1)
+            bot.set_webhook(url=url)
+
+        print("WEBHOOK OK:", url)
+
+    except Exception as e:
+        print("WEBHOOK ERROR:", e)
+
+# ---------------- START ----------------
+user_state = {}
+
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.send_message(
+        message.chat.id,
+        "🚆 Бот живой. Введите маршрут:\nKyiv → Lviv → 2026-06-01"
+    )
+
+@bot.message_handler(content_types=['text'])
+def text(message):
+    bot.send_message(message.chat.id, "Получено: " + message.text)
+
+# ---------------- WEBHOOK ----------------
+@app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
+    bot.process_new_updates([update])
+    return "OK"
+
+@app.route("/")
+def home():
+    return "OK"
+
+# ---------------- START SERVER ----------------
+if __name__ == "__main__":
+    print("BOT STARTED")
+
+    # 💥 ключевой момент — перед стартом всегда чинит webhook
+    fix_webhook()
+
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)import os
+import time
+import telebot
 from telebot import types
 from flask import Flask, request
 
