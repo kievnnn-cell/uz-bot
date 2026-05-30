@@ -1,19 +1,13 @@
 import os
 import re
+import time
 import sqlite3
 import logging
-import asyncio
 import httpx
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 # ---------------- CONFIG ----------------
 TOKEN = os.getenv("BOT_TOKEN")
@@ -21,7 +15,7 @@ BASE_URL = os.getenv("BASE_URL")
 PORT = int(os.getenv("PORT", 10000))
 WEBHOOK_PATH = "/webhook"
 
-UZ_BASE = "https://booking.uz.gov.ua"
+UZ_API = "https://booking.uz.gov.ua"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("bot")
@@ -53,10 +47,10 @@ def parse(text: str):
     train = re.search(r"№\s*(\d+)", text)
     train = train.group(1) if train else None
 
-    wagon = "купе" if "купе" in text.lower() else "плацкарт"
-
     date = re.search(r"(\d{2}\.\d{2}\.\d{4})", text)
     date = date.group(1) if date else None
+
+    wagon = "купе" if "купе" in text.lower() else "плацкарт"
 
     route = text.split("№")[-1]
     route = route.split(",")[0]
@@ -74,10 +68,10 @@ def parse(text: str):
     }
 
 
-# ---------------- STATION API ----------------
+# ---------------- STATION SEARCH ----------------
 async def get_station(client, name):
     try:
-        r = await client.get(f"{UZ_BASE}/en/purchase/station/{name[:3]}")
+        r = await client.get(f"{UZ_API}/en/purchase/station/{name[:3]}")
         data = r.json()
         if data.get("value"):
             return data["value"][0]["station_id"]
@@ -86,27 +80,26 @@ async def get_station(client, name):
 
 
 # ---------------- SEARCH ----------------
-async def search_uz(client, state):
-    r = await client.post(
-        f"{UZ_BASE}/en/purchase/search/",
+async def search(client, state):
+    return await client.post(
+        f"{UZ_API}/en/purchase/search/",
         data={
             "from": state["from_id"],
             "to": state["to_id"],
             "date": state["date"]
         }
     )
-    return r.json()
 
 
 # ---------------- START ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚆 Отправь:\n"
+        "Отправь одну строку:\n"
         "поезд №81 Киев–Ивано-Франковск, купе, 31.05.2026"
     )
 
 
-# ---------------- CREATE WATCH ----------------
+# ---------------- HANDLE INPUT ----------------
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
@@ -114,7 +107,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parsed = parse(text)
 
     if not parsed:
-        await update.message.reply_text("❌ Неверный формат")
+        await update.message.reply_text("Неверный формат")
         return
 
     async with httpx.AsyncClient(timeout=20) as client:
@@ -122,7 +115,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         to_id = await get_station(client, parsed["to_city"])
 
     if not from_id or not to_id:
-        await update.message.reply_text("❌ Не нашёл станции")
+        await update.message.reply_text("Не нашёл станции")
         return
 
     cur.execute("""
@@ -143,37 +136,29 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ))
     conn.commit()
 
-    await update.message.reply_text(
-        "✅ Мониторинг запущен.\n"
-        "Сообщу, когда появятся билеты."
-    )
+    await update.message.reply_text("Ок. Мониторинг запущен.")
 
 
-# ---------------- MONITOR JOB ----------------
-async def check_jobs(context: ContextTypes.DEFAULT_TYPE):
+# ---------------- MONITOR LOOP ----------------
+async def monitor(context: ContextTypes.DEFAULT_TYPE):
     cur.execute("SELECT * FROM watches WHERE active=1")
     rows = cur.fetchall()
 
+    if not rows:
+        return
+
     async with httpx.AsyncClient(timeout=20) as client:
-        for row in rows:
-            (
-                user_id,
-                from_city,
-                to_city,
-                from_id,
-                to_id,
-                train,
-                wagon,
-                date,
-                active
-            ) = row
+        for r in rows:
+            user_id, fc, tc, fid, tid, train, wagon, date, active = r
 
             try:
-                data = await search_uz(client, {
-                    "from_id": from_id,
-                    "to_id": to_id,
+                res = await search(client, {
+                    "from_id": fid,
+                    "to_id": tid,
                     "date": date
                 })
+
+                data = res.json()
             except:
                 continue
 
@@ -193,11 +178,11 @@ async def check_jobs(context: ContextTypes.DEFAULT_TYPE):
                     if places and places != "0":
                         await context.bot.send_message(
                             user_id,
-                            f"🚨 БИЛЕТ НАЙДЕН!\n\n"
+                            f"БИЛЕТ НАЙДЕН\n\n"
                             f"Поезд №{train}\n"
-                            f"{from_city} → {to_city}\n"
+                            f"{fc} → {tc}\n"
                             f"{wagon}\n"
-                            f"Дата: {date}\n"
+                            f"{date}\n"
                             f"Мест: {places}"
                         )
 
@@ -210,14 +195,16 @@ async def check_jobs(context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------- WEBHOOK ----------------
 async def post_init(app: Application):
-    url = f"{BASE_URL}{WEBHOOK_PATH}"
-    await app.bot.set_webhook(url=url, drop_pending_updates=True)
+    await app.bot.set_webhook(
+        url=f"{BASE_URL}{WEBHOOK_PATH}",
+        drop_pending_updates=True
+    )
 
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-app.job_queue.run_repeating(check_jobs, interval=120, first=10)
+app.job_queue.run_repeating(monitor, interval=120, first=10)
 
 app.post_init = post_init
 
