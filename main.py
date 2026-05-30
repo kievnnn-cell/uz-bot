@@ -1,37 +1,35 @@
-print("TOKEN:", TOKEN)
-print("WEBHOOK:", WEBHOOK_URL)
 import os
-import re
 import telebot
 from flask import Flask, request
 
+# =====================
+# ENV VARIABLES (Render)
+# =====================
 TOKEN = os.getenv("TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
+if not TOKEN:
+    raise ValueError("TOKEN is missing in environment variables")
+
+if not WEBHOOK_URL:
+    raise ValueError("WEBHOOK_URL is missing in environment variables")
+
+# =====================
+# BOT + APP
+# =====================
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
-
-# =========================
-# 🔥 СОСТОЯНИЯ ПОЛЬЗОВАТЕЛЕЙ
-# =========================
-user_state = {}
-
-STATE_IDLE = "idle"
-STATE_WAIT_ROUTE = "wait_route"
-
 
 print("BOT STARTED")
 
 
-# =========================
-# 🚀 START
-# =========================
+# =====================
+# START COMMAND
+# =====================
 @bot.message_handler(commands=['start'])
 def start(message):
-    user_state[message.chat.id] = STATE_IDLE
-
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("🚆 Найти билеты")
+    markup.add("🚆 Найти билет")
 
     bot.send_message(
         message.chat.id,
@@ -40,116 +38,50 @@ def start(message):
     )
 
 
-# =========================
-# 🎯 ОБРАБОТКА ТЕКСТА
-# =========================
-@bot.message_handler(content_types=['text'])
-def handle_text(message):
+# =====================
+# TEXT HANDLER (простая логика)
+# =====================
+user_state = {}
+
+@bot.message_handler(func=lambda m: True)
+def handle(message):
     chat_id = message.chat.id
-    text = message.text.strip()
+    text = message.text
 
-    state = user_state.get(chat_id, STATE_IDLE)
-
-    # -------------------------
-    # 1) НАЖАЛИ "НАЙТИ БИЛЕТЫ"
-    # -------------------------
-    if text == "🚆 Найти билеты":
-        user_state[chat_id] = STATE_WAIT_ROUTE
-
-        bot.send_message(
-            chat_id,
-            "Введите маршрут:\nФормат: Kyiv → Lviv → 2026-06-01"
-        )
+    # шаг 1
+    if text == "🚆 Найти билет":
+        user_state[chat_id] = "await_route"
+        bot.send_message(chat_id, "Введите маршрут:\nФормат: Kyiv → Lviv → 2026-06-01")
         return
 
-    # -------------------------
-    # 2) ЖДЁМ МАРШРУТ
-    # -------------------------
-    if state == STATE_WAIT_ROUTE:
+    # шаг 2
+    if user_state.get(chat_id) == "await_route":
+        try:
+            parts = [p.strip() for p in text.split("→")]
 
-        # парсим маршрут
-        match = re.match(r"(.+?)→(.+?)→(\d{4}-\d{2}-\d{2})", text)
+            if len(parts) != 3:
+                bot.send_message(chat_id, "❌ Ошибка формата. Используй: Kyiv → Lviv → 2026-06-01")
+                return
 
-        if not match:
-            bot.send_message(
-                chat_id,
-                "❌ Неверный формат!\n\nПример:\nKyiv → Lviv → 2026-06-01"
-            )
-            return
+            from_city, to_city, date = parts
 
-        origin = match.group(1).strip()
-        destination = match.group(2).strip()
-        date = match.group(3).strip()
-
-        # сохраняем данные
-        user_state[chat_id] = {
-            "state": "route_ready",
-            "origin": origin,
-            "destination": destination,
-            "date": date
-        }
-
-        # кнопки следующего шага
-        markup = telebot.types.InlineKeyboardMarkup()
-        markup.add(
-            telebot.types.InlineKeyboardButton("🔎 Найти билеты", callback_data="search"),
-            telebot.types.InlineKeyboardButton("✏️ Изменить", callback_data="edit")
-        )
-
-        bot.send_message(
-            chat_id,
-            f"🚆 Маршрут принят:\n📍 {origin} → {destination}\n📅 {date}",
-            reply_markup=markup
-        )
-        return
-
-    # -------------------------
-    # 3) если просто текст
-    # -------------------------
-    bot.send_message(chat_id, "Нажми кнопку 🚆 Найти билеты")
-
-
-# =========================
-# 🔘 INLINE КНОПКИ
-# =========================
-@bot.callback_query_handler(func=lambda call: True)
-def callback(call):
-    chat_id = call.message.chat.id
-    data = call.data
-
-    user_data = user_state.get(chat_id, {})
-
-    # -------------------------
-    # 🔎 ПОИСК
-    # -------------------------
-    if data == "search":
-        if isinstance(user_data, dict) and user_data.get("state") == "route_ready":
+            user_state[chat_id] = "done"
 
             bot.send_message(
                 chat_id,
-                f"🔎 Ищу билеты...\n\n"
-                f"{user_data['origin']} → {user_data['destination']}\n"
-                f"Дата: {user_data['date']}"
+                f"🚆 Маршрут принят:\n📍 Откуда: {from_city}\n📍 Куда: {to_city}\n📅 Дата: {date}\n\n"
+                f"🔎 Ищу билеты..."
             )
 
-        else:
-            bot.send_message(chat_id, "Сначала введи маршрут")
+            # сюда позже подключим API / расписание / tickets
 
-    # -------------------------
-    # ✏️ ИЗМЕНИТЬ
-    # -------------------------
-    elif data == "edit":
-        user_state[chat_id] = STATE_WAIT_ROUTE
-
-        bot.send_message(
-            chat_id,
-            "Введите новый маршрут:\nФормат: Kyiv → Lviv → 2026-06-01"
-        )
+        except Exception as e:
+            bot.send_message(chat_id, f"Ошибка: {str(e)}")
 
 
-# =========================
-# 🌐 WEBHOOK
-# =========================
+# =====================
+# WEBHOOK ENDPOINT
+# =====================
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
     json_str = request.get_data().decode("utf-8")
@@ -158,20 +90,25 @@ def webhook():
     return "OK", 200
 
 
+# =====================
+# HEALTH CHECK
+# =====================
 @app.route("/")
 def index():
     return "Bot is alive", 200
 
 
-# =========================
-# 🚀 START SERVER
-# =========================
+# =====================
+# STARTUP
+# =====================
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 5000))
+
+    print("WEBHOOK URL:", WEBHOOK_URL)
 
     bot.remove_webhook()
     bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
 
-    print("WEBHOOK SET:", WEBHOOK_URL)
+    print("WEBHOOK SET")
 
     app.run(host="0.0.0.0", port=PORT)
