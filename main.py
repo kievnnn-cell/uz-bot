@@ -1,26 +1,27 @@
 import os
 import logging
-import traceback
+import re
 
 from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
+    MessageHandler,
     ContextTypes,
-    Defaults,
+    filters,
 )
 
 # ---------------- CONFIG ----------------
 TOKEN = os.getenv("BOT_TOKEN")
-BASE_URL = os.getenv("BASE_URL")  # https://your-app.onrender.com
+BASE_URL = os.getenv("BASE_URL")
 PORT = int(os.getenv("PORT", 10000))
 WEBHOOK_PATH = "/webhook"
 
 if not TOKEN:
-    raise RuntimeError("BOT_TOKEN is missing")
+    raise RuntimeError("BOT_TOKEN missing")
 
 if not BASE_URL:
-    raise RuntimeError("BASE_URL is missing")
+    raise RuntimeError("BASE_URL missing")
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(
@@ -30,68 +31,93 @@ logging.basicConfig(
 
 logger = logging.getLogger("bot")
 
-# ---------------- BOT APP ----------------
-application = Application.builder().token(TOKEN).build()
+# ---------------- BOT ----------------
+app = Application.builder().token(TOKEN).build()
 
 
-# ---------------- SAFE HANDLER WRAPPER ----------------
-async def safe_handler(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        try:
-            return await func(update, context)
-        except Exception as e:
-            logger.error("Handler error: %s", str(e))
-            logger.error(traceback.format_exc())
-
-            if update.effective_message:
-                await update.effective_message.reply_text(
-                    "⚠️ Error occurred, but bot is still running."
-                )
-
-    return wrapper
-
-
-# ---------------- COMMANDS ----------------
-@safe_handler
+# ---------------- START ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Production bot is alive!")
+    await update.message.reply_text(
+        "🤖 Отправь запрос, например:\n"
+        "поезд №81 Киев–Ивано-Франковск, купе"
+    )
 
 
-@safe_handler
-async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🏓 pong")
+# ---------------- PARSER ----------------
+def parse_query(text: str):
+    """
+    Очень простой парсер под твою задачу
+    """
+
+    number = None
+    route = None
+    wagon = None
+
+    # номер поезда
+    m = re.search(r"№\s*(\d+)", text)
+    if m:
+        number = m.group(1)
+
+    # вагон
+    if "купе" in text.lower():
+        wagon = "Купе"
+    elif "плацкарт" in text.lower():
+        wagon = "Плацкарт"
+
+    # маршрут (очень грубо)
+    if "–" in text or "-" in text:
+        route = text.split("№")[-1]
+        route = re.sub(r"[,\.\n]", "", route).strip()
+
+    return number, route, wagon
 
 
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("ping", ping))
+# ---------------- MAIN TEXT HANDLER ----------------
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    logger.info(f"INPUT: {text}")
+
+    number, route, wagon = parse_query(text)
+
+    response = "🚆 Результат поиска:\n"
+
+    if number:
+        response += f"• Поезд №{number}\n"
+    if route:
+        response += f"• Маршрут: {route}\n"
+    if wagon:
+        response += f"• Тип вагона: {wagon}\n"
+
+    if not any([number, route, wagon]):
+        response = "❌ Не понял запрос. Пример:\nпоезд №81 Киев–Ивано-Франковск, купе"
+
+    await update.message.reply_text(response)
 
 
-# ---------------- WEBHOOK AUTO SETUP ----------------
-async def post_init(app: Application):
+# ---------------- HANDLERS ----------------
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+
+# ---------------- WEBHOOK SETUP ----------------
+async def post_init(application: Application):
     url = f"{BASE_URL}{WEBHOOK_PATH}"
 
-    logger.info("Setting webhook → %s", url)
+    logger.info(f"Setting webhook: {url}")
 
-    await app.bot.delete_webhook(drop_pending_updates=True)
-    await app.bot.set_webhook(url=url)
+    await application.bot.delete_webhook(drop_pending_updates=True)
+    await application.bot.set_webhook(url=url)
 
-    info = await app.bot.get_webhook_info()
-    logger.info("Webhook info: %s", info)
-
-
-# ---------------- HEALTH CHECK ----------------
-async def health_check():
-    logger.info("Health check passed")
+    info = await application.bot.get_webhook_info()
+    logger.info(f"Webhook info: {info}")
 
 
 # ---------------- RUN ----------------
 if __name__ == "__main__":
-    logger.info("BOOT INIT")
+    app.post_init = post_init
 
-    application.post_init = post_init
-
-    # IMPORTANT: full production webhook server
-    application.run_webhook(
+    app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=WEBHOOK_PATH,
