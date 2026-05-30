@@ -91,4 +91,4 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ))
     db.commit()
 
-    await update.message.reply_text("Ок. Мониторинг зап
+    await update.message.reply_text("Ок. Мониторинг запущен.")
