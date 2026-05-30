@@ -1,100 +1,132 @@
 import os
+import time
+import re
+import threading
 import logging
-from flask import Flask, request
-
+from flask import Flask
 import telebot
 
-# =====================
+from services.uz_api import check_coupe_available
+
+# =========================
 # CONFIG
-# =====================
+# =========================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BASE_URL = os.getenv("BASE_URL")
 PORT = int(os.getenv("PORT", 10000))
 
-if not BOT_TOKEN:
-    raise Exception("BOT_TOKEN is not set")
+CHECK_INTERVAL = 30
 
-bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
+logging.basicConfig(level=logging.INFO)
 
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 app = Flask(__name__)
 
-# =====================
-# LOGGING (production-safe)
-# =====================
+subscriptions = []
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
+# =========================
+# STRICT PARSER
+# =========================
 
-logger = logging.getLogger(__name__)
+def parse_query(text: str):
+    pattern = r"поезд\s*№(\d+)\s+(.+?)–(.+?),\s*(купе)"
+    match = re.search(pattern, text, re.IGNORECASE)
 
-# =====================
-# TELEGRAM WEBHOOK
-# =====================
+    if not match:
+        return None
 
-WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = f"{BASE_URL}{WEBHOOK_PATH}" if BASE_URL else None
+    return {
+        "train_number": match.group(1),
+        "from": match.group(2).strip(),
+        "to": match.group(3).strip(),
+        "class": match.group(4).lower()
+    }
 
+# =========================
+# MONITOR
+# =========================
 
-def setup_webhook():
-    try:
-        if not WEBHOOK_URL:
-            logger.warning("BASE_URL is not set, webhook NOT configured")
-            return
+def monitor():
+    logging.info("MONITOR STARTED")
 
-        bot.remove_webhook()
-        logger.info("Old webhook removed")
+    while True:
+        for sub in subscriptions[:]:
 
-        bot.set_webhook(url=WEBHOOK_URL)
-        logger.info(f"Webhook set to: {WEBHOOK_URL}")
+            try:
+                if check_coupe_available(
+                    sub["train_number"],
+                    sub["from"],
+                    sub["to"]
+                ):
+                    bot.send_message(
+                        sub["chat_id"],
+                        f"🚨 <b>БИЛЕТЫ ПОЯВИЛИСЬ!</b>\n\n"
+                        f"🚆 Поезд №{sub['train_number']}\n"
+                        f"📍 {sub['from']} → {sub['to']}\n"
+                        f"💺 Купе доступно"
+                    )
+                    subscriptions.remove(sub)
 
-    except Exception as e:
-        logger.error(f"Webhook setup failed: {e}")
+            except Exception as e:
+                logging.error(e)
 
+        time.sleep(CHECK_INTERVAL)
 
-# =====================
-# FLASK ROUTES
-# =====================
+# =========================
+# TELEGRAM
+# =========================
 
-@app.route("/", methods=["GET"])
+@bot.message_handler(func=lambda m: True)
+def handler(m):
+    parsed = parse_query(m.text)
+
+    if not parsed:
+        bot.reply_to(
+            m,
+            "❌ Формат строго:\n"
+            "<code>поезд №81 Киев–Ивано-Франковск, купе</code>"
+        )
+        return
+
+    subscriptions.append({
+        "chat_id": m.chat.id,
+        **parsed
+    })
+
+    bot.reply_to(
+        m,
+        f"✅ Принято\n\n"
+        f"🚆 №{parsed['train_number']}\n"
+        f"📍 {parsed['from']} → {parsed['to']}\n"
+        f"💺 Купе\n\n"
+        f"🔎 Мониторим..."
+    )
+
+# =========================
+# FLASK
+# =========================
+
+@app.route("/")
 def home():
-    return "BOT IS RUNNING", 200
-
-
-@app.route(WEBHOOK_PATH, methods=["POST"])
-def webhook():
-    try:
-        update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
-        bot.process_new_updates([update])
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
     return "OK", 200
 
+# =========================
+# START
+# =========================
 
-# =====================
-# BOT LOGIC (пример)
-# =====================
+def start_bot():
+    logging.info("BOOT INIT")
 
-@bot.message_handler(commands=["start"])
-def start(message):
-    bot.send_message(message.chat.id, "Бот работает. Напиши /train")
+    if BASE_URL:
+        bot.remove_webhook()
+        bot.set_webhook(url=f"{BASE_URL}/webhook")
+        logging.info(f"Webhook set: {BASE_URL}/webhook")
 
-
-@bot.message_handler(commands=["train"])
-def train(message):
-    bot.send_message(message.chat.id, "Введите маршрут (например: Киев - Львов)")
-
-
-# =====================
-# BOOT
-# =====================
+    bot.polling(non_stop=True)
 
 if __name__ == "__main__":
-    logger.info("BOOT INIT")
+    threading.Thread(target=start_bot).start()
+    threading.Thread(target=monitor).start()
 
-    setup_webhook()
-
-    logger.info(f"FLASK STARTING ON PORT {PORT}")
     app.run(host="0.0.0.0", port=PORT)
