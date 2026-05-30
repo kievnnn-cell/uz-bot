@@ -1,129 +1,112 @@
 import os
-from flask import Flask, request
 import telebot
+from telebot import types
 
-# =========================
-# CONFIG
-# =========================
-
+# ======================
+# TOKEN (берём из ENV Render)
+# ======================
 TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 if not TOKEN:
     raise Exception("BOT_TOKEN is not set in environment variables")
 
-bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
+bot = telebot.TeleBot(TOKEN)
 
-app = Flask(__name__)
-
-# =========================
-# STATES (простая память)
-# =========================
+# ======================
+# STATE STORAGE (простое FSM без баз данных)
+# ======================
 user_state = {}
 
-STATE_ROUTE = "route_input"
+STATE_START = "start"
+STATE_WAIT_ROUTE = "wait_route"
 
 
-# =========================
+# ======================
 # START
-# =========================
-@bot.message_handler(commands=['start'])
+# ======================
+@bot.message_handler(commands=["start"])
 def start(message):
     user_id = message.chat.id
-    user_state[user_id] = None
+    user_state[user_id] = STATE_START
+
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn = types.KeyboardButton("🚆 Найти маршрут")
+    markup.add(btn)
 
     bot.send_message(
-        user_id,
-        "Привет! Я бот поиска маршрутов 🚆\n"
-        "Выбери действие:\n\n"
-        "➡ /route — найти маршрут"
+        message.chat.id,
+        "Привет! Я бот поиска маршрутов 🚆\nВыбери действие:",
+        reply_markup=markup
     )
 
 
-# =========================
-# ROUTE COMMAND
-# =========================
-@bot.message_handler(commands=['route'])
-def route_start(message):
-    user_id = message.chat.id
-    user_state[user_id] = STATE_ROUTE
-
-    bot.send_message(
-        user_id,
-        "Введите маршрут:\n"
-        "Формат:\nKyiv → Lviv → 2026-06-01"
-    )
-
-
-# =========================
-# TEXT HANDLER (STATE MACHINE)
-# =========================
-@bot.message_handler(content_types=['text'])
-def handle_text(message):
+# ======================
+# BUTTON HANDLER
+# ======================
+@bot.message_handler(func=lambda message: True)
+def handle_all(message):
     user_id = message.chat.id
     text = message.text.strip()
 
-    state = user_state.get(user_id)
+    state = user_state.get(user_id, STATE_START)
 
-    if state == STATE_ROUTE:
-        user_state[user_id] = None
+    # ----------------------
+    # STEP 1: кнопка
+    # ----------------------
+    if text == "🚆 Найти маршрут":
+        user_state[user_id] = STATE_WAIT_ROUTE
 
-        try:
-            parts = text.split("→")
-            if len(parts) != 3:
-                raise ValueError()
-
-            from_city = parts[0].strip()
-            to_city = parts[1].strip()
-            date = parts[2].strip()
-
-            bot.send_message(
-                user_id,
-                f"🔎 Ищу маршрут:\n"
-                f"{from_city} → {to_city}\n"
-                f"📅 Дата: {date}\n\n"
-                f"✅ (заглушка поиска — дальше подключим API)"
-            )
-
-        except:
-            bot.send_message(
-                user_id,
-                "❌ Неверный формат!\n"
-                "Пример:\nKyiv → Lviv → 2026-06-01"
-            )
+        bot.send_message(
+            message.chat.id,
+            "Введите маршрут:\nФормат: Kyiv → Lviv → 2026-06-01"
+        )
         return
 
-    bot.send_message(user_id, "Нажми /route чтобы начать поиск маршрута")
+    # ----------------------
+    # STEP 2: ввод маршрута
+    # ----------------------
+    if state == STATE_WAIT_ROUTE:
+        user_state[user_id] = STATE_START
+
+        try:
+            parts = [p.strip() for p in text.split("→")]
+
+            if len(parts) != 3:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Неверный формат.\nПример: Kyiv → Lviv → 2026-06-01"
+                )
+                return
+
+            from_city, to_city, date = parts
+
+            # Заглушка (потом подключим API)
+            bot.send_message(
+                message.chat.id,
+                f"🔎 Ищу билеты...\n\n"
+                f"🚉 Откуда: {from_city}\n"
+                f"🎯 Куда: {to_city}\n"
+                f"📅 Дата: {date}\n\n"
+                f"✅ Найдено 3 варианта (демо)"
+            )
+
+        except Exception as e:
+            bot.send_message(message.chat.id, f"Ошибка: {e}")
+
+        return
+
+    # ----------------------
+    # fallback
+    # ----------------------
+    bot.send_message(
+        message.chat.id,
+        "Нажми /start"
+    )
 
 
-# =========================
-# WEBHOOK SETUP
-# =========================
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    json_str = request.get_data().decode("utf-8")
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
-    return "OK", 200
+# ======================
+# START BOT
+# ======================
+print("BOT STARTED")
 
-
-@app.route("/", methods=["GET"])
-def index():
-    return "Bot is running", 200
-
-
-# =========================
-# START SERVER
-# =========================
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-
-    print("BOT STARTED")
-
-    if WEBHOOK_URL:
-        full_webhook = f"{WEBHOOK_URL}/{TOKEN}"
-        bot.remove_webhook()
-        bot.set_webhook(url=full_webhook)
-        print("WEBHOOK SET:", full_webhook)
-
-    app.run(host="0.0.0.0", port=port)
+bot.infinity_polling(skip_pending=True)
