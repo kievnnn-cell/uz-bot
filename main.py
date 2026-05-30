@@ -1,9 +1,15 @@
 import os
 import logging
+from flask import Flask, request
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-# ---------------- LOGGING ----------------
+# ----------------- CONFIG -----------------
+TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_PATH = "/webhook"
+BASE_URL = os.getenv("BASE_URL")  # https://your-app.onrender.com
+
+# ----------------- LOGGING -----------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
@@ -11,47 +17,57 @@ logging.basicConfig(
 
 logger = logging.getLogger("bot")
 
-# ---------------- ENV ----------------
-TOKEN = os.getenv("BOT_TOKEN")
-PORT = int(os.getenv("PORT", "10000"))
-BASE_URL = os.getenv("BASE_URL")  # https://your-app.onrender.com
+# ----------------- FLASK -----------------
+app = Flask(__name__)
 
-if not TOKEN:
-    raise RuntimeError("BOT_TOKEN is missing")
-if not BASE_URL:
-    raise RuntimeError("BASE_URL is missing")
+# ----------------- BOT -----------------
+application = Application.builder().token(TOKEN).build()
 
-# ---------------- HANDLERS ----------------
+
+# ----------------- HANDLERS -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 Bot is alive!")
 
-async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("pong 🟢")
 
-# ---------------- MAIN ----------------
+application.add_handler(CommandHandler("start", start))
+
+
+# ----------------- WEBHOOK ROUTE -----------------
+@app.route(WEBHOOK_PATH, methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    application.create_task(application.process_update(update))
+    return "OK"
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return "Bot is running"
+
+
+# ----------------- INIT WEBHOOK -----------------
+def set_webhook():
+    url = f"{BASE_URL}{WEBHOOK_PATH}"
+    logger.info(f"Setting webhook: {url}")
+    application.bot.set_webhook(url=url)
+
+
+# ----------------- START -----------------
 def main():
     logger.info("BOOT INIT")
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    # IMPORTANT: initialize application properly (fix asyncio issue)
+    import asyncio
 
-    # handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("ping", ping))
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-    webhook_path = "/webhook"
-    webhook_url = f"{BASE_URL}{webhook_path}"
+    application.initialize()
+    set_webhook()
 
-    logger.info("Starting webhook mode")
-    logger.info(f"Webhook URL: {webhook_url}")
-    logger.info(f"Listening on port: {PORT}")
+    logger.info("Flask starting...")
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
-    # 🔥 ВАЖНО: production webhook server
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path="webhook",
-        webhook_url=webhook_url,
-    )
 
 if __name__ == "__main__":
     main()
