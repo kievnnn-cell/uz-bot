@@ -1,50 +1,46 @@
-import requests
-import logging
+import threading
+import time
+import re
 
-BASE_URL = "https://app.uz.gov.ua/api"  # публичный backend слой (используется мобильным клиентом)
+def parse_request(text):
+    # поезд №81 Киев–Ивано-Франковск, купе
 
-def get_train_info(train_number, from_city, to_city):
-    """
-    Получаем данные по поезду через публичный API слой УЗ.
-    """
+    number = re.search(r"№(\d+)", text)
+    seat_type = "купе" if "купе" in text else None
 
-    try:
-        url = f"{BASE_URL}/search"
-        params = {
-            "query": f"{from_city} {to_city}",
-        }
-
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
-
-        return data
-
-    except Exception as e:
-        logging.error(f"UZ API error: {e}")
-        return None
+    return {
+        "train": number.group(1) if number else None,
+        "seat": seat_type
+    }
 
 
-def check_coupe_available(train_number, from_city, to_city):
-    """
-    Проверяем наличие купе.
-    """
+def fake_check_uz(train_number, seat_type):
+    # TODO: сюда подключается реальный API УЗ
+    # сейчас имитация
+    return True  # значит "купе появилось"
 
-    data = get_train_info(train_number, from_city, to_city)
 
-    if not data:
-        return False
+def monitor_loop(bot, chat_id, train_number, seat_type):
+    while True:
+        if fake_check_uz(train_number, seat_type):
+            bot.send_message(
+                chat_id,
+                f"🚨 Есть места!\nПоезд №{train_number}\nТип: {seat_type}"
+            )
+            break
 
-    try:
-        for train in data.get("trains", []):
-            if str(train.get("number")) == str(train_number):
+        time.sleep(60)  # проверка каждую минуту
 
-                for wagon in train.get("wagons", []):
-                    if wagon.get("type") in ["coupe", "КОМФ", "coupe_car"]:
-                        if wagon.get("available_seats", 0) > 0:
-                            return True
 
-        return False
+def start_monitor(bot, chat_id, text):
+    data = parse_request(text)
 
-    except Exception as e:
-        logging.error(f"Parse error: {e}")
-        return False
+    if not data["train"]:
+        bot.send_message(chat_id, "❌ Не понял номер поезда")
+        return
+
+    thread = threading.Thread(
+        target=monitor_loop,
+        args=(bot, chat_id, data["train"], data["seat"])
+    )
+    thread.start()
