@@ -1,57 +1,83 @@
 import os
-import time
 import threading
+from flask import Flask, request
 import telebot
-from flask import Flask
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# =========================
+# CONFIG
+# =========================
 
-if not BOT_TOKEN:
-    raise Exception("BOT_TOKEN is missing")
+TOKEN = os.getenv("BOT_TOKEN")  # только из environment
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set in environment variables")
 
-bot = telebot.TeleBot(BOT_TOKEN)
+BASE_URL = os.getenv("BASE_URL")  # например https://your-app.onrender.com
+
+bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 app = Flask(__name__)
 
-# ---------------- FLASK ----------------
-@app.route("/")
-def home():
-    return "BOT RUNNING 🚆", 200
+# =========================
+# BOT LOGIC
+# =========================
 
-
-# ---------------- HANDLERS ----------------
 @bot.message_handler(commands=["start"])
 def start(message):
     bot.send_message(
         message.chat.id,
-        "Привет! Я бот маршрутов 🚆"
+        "👋 Бот запущен и работает нормально."
     )
 
+@bot.message_handler(func=lambda m: True)
+def echo(message):
+    bot.send_message(message.chat.id, f"Ты написал: {message.text}")
 
-# ---------------- BOT ----------------
+
+# =========================
+# FLASK ROUTES (WEBHOOK)
+# =========================
+
+@app.route("/", methods=["GET"])
+def home():
+    return "Bot is alive", 200
+
+
+@app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "OK", 200
+
+
+# =========================
+# BOT STARTUP
+# =========================
+
+def set_webhook():
+    if not BASE_URL:
+        print("WARNING: BASE_URL is not set, webhook will not be configured")
+        return
+
+    webhook_url = f"{BASE_URL}/{TOKEN}"
+    bot.remove_webhook()
+    bot.set_webhook(url=webhook_url)
+    print("Webhook set:", webhook_url)
+
+
 def run_bot():
+    set_webhook()
     print("BOT THREAD STARTED")
-    print("STARTING POLLING 🚆")
-
-    while True:
-        try:
-            bot.infinity_polling(
-                skip_pending=True,
-                timeout=10,
-                long_polling_timeout=10
-            )
-
-        except Exception as e:
-            print("POLLING ERROR:", e)
-            time.sleep(3)
 
 
-# ---------------- MAIN ----------------
+# =========================
+# MAIN
+# =========================
+
 if __name__ == "__main__":
-    print("BOOT INIT")
+    port = int(os.getenv("PORT", 10000))
 
-    t = threading.Thread(target=run_bot)
-    t.daemon = True
-    t.start()
+    # бот в отдельном потоке
+    threading.Thread(target=run_bot).start()
 
-    print("FLASK STARTING...")
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    # flask сервер (Render требует PORT)
+   
