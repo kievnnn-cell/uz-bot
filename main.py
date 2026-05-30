@@ -1,145 +1,134 @@
 import os
-import time
 import logging
 import threading
+import telebot
 from flask import Flask, request
 
-import telebot
-
-# =========================
+# =======================
 # CONFIG
-# =========================
-
+# =======================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-BASE_URL = os.getenv("BASE_URL")
+BASE_URL = os.getenv("BASE_URL")  # https://your-app.onrender.com
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
 PORT = int(os.getenv("PORT", 10000))
 
 if not BOT_TOKEN:
     raise Exception("BOT_TOKEN is not set")
 
-if not BASE_URL:
-    print("WARNING: BASE_URL is not set, webhook may fail")
-
-WEBHOOK_URL = f"{BASE_URL}{WEBHOOK_PATH}"
-
-# =========================
-# LOGGING
-# =========================
-
 logging.basicConfig(level=logging.INFO)
 
-# =========================
-# BOT INIT
-# =========================
-
-bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
-
-# =========================
-# FLASK APP
-# =========================
+bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 
 app = Flask(__name__)
 
-# =========================
-# SIMPLE STATE (for MVP)
-# =========================
+# =======================
+# SIMPLE MEMORY (монитор)
+# =======================
+# user_id -> list of subscriptions
 subscriptions = {}
 
-# =========================
-# TELEGRAM HANDLERS
-# =========================
+# =======================
+# BOT LOGIC
+# =======================
 
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=["start"])
 def start(message):
     bot.send_message(
         message.chat.id,
-        "🚆 Бот запущен.\n\n"
+        "Привет! Я монитор поездов.\n\n"
         "Формат запроса:\n"
         "поезд №81 Киев–Ивано-Франковск, купе"
     )
 
+
 @bot.message_handler(func=lambda m: True)
-def handle_text(message):
+def handle(message):
     text = message.text.lower()
 
-    # простейший парсер (MVP)
-    if "поезд" in text:
-        chat_id = message.chat.id
+    # сохраняем подписку
+    user_id = message.chat.id
 
-        subscriptions[chat_id] = text
+    if user_id not in subscriptions:
+        subscriptions[user_id] = []
 
-        bot.send_message(
-            chat_id,
-            f"✅ Принято в мониторинг:\n\n{text}\n\n"
-            "Я буду проверять наличие купе и уведомлять."
-        )
-    else:
-        bot.send_message(
-            message.chat.id,
-            "Напиши запрос в формате:\n"
-            "поезд №81 Киев–Ивано-Франковск, купе"
-        )
+    subscriptions[user_id].append(text)
 
-# =========================
-# WEBHOOK ENDPOINT
-# =========================
+    bot.send_message(
+        user_id,
+        f"Принято:\n{text}\n\n"
+        "Я буду проверять и сообщать, когда появятся места."
+    )
 
-@app.route(WEBHOOK_PATH, methods=['POST'])
+
+# =======================
+# MOCK MONITOR (заглушка логики)
+# =======================
+def monitor_loop():
+    import time
+
+    logging.info("MONITOR STARTED")
+
+    while True:
+        # тут будет API УЗ (потом подключим)
+        # сейчас просто имитация
+
+        for user_id, subs in subscriptions.items():
+            for sub in subs:
+                if "81" in sub:
+                    # имитация события
+                    bot.send_message(
+                        user_id,
+                        "🚆 Обновление:\n"
+                        "Поезд №81 — появились места в купе!"
+                    )
+
+        time.sleep(60)
+
+
+# =======================
+# WEBHOOK ROUTE
+# =======================
+@app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
     json_str = request.get_data().decode("utf-8")
     update = telebot.types.Update.de_json(json_str)
     bot.process_new_updates([update])
     return "OK", 200
 
-# =========================
-# MONITOR (placeholder)
-# =========================
 
-def monitor_loop():
-    """
-    Здесь позже подключим uz_api.py
-    Сейчас просто держит процесс живым
-    """
-    while True:
-        try:
-            # TODO: проверка УЗ билетов
-            time.sleep(30)
-        except Exception as e:
-            logging.error(f"Monitor error: {e}")
-            time.sleep(10)
+@app.route("/", methods=["GET"])
+def index():
+    return "Bot is running", 200
 
-# =========================
+
+# =======================
 # STARTUP
-# =========================
+# =======================
+def set_webhook():
+    if not BASE_URL:
+        logging.warning("BASE_URL is not set!")
+        return
 
-def start_bot():
-    logging.info("BOOT INIT")
+    url = BASE_URL + WEBHOOK_PATH
 
-    # ⚠️ ВАЖНО: убираем старый webhook
     try:
         bot.remove_webhook()
         logging.info("Old webhook removed")
+
+        bot.set_webhook(url=url)
+        logging.info(f"Webhook set: {url}")
     except Exception as e:
-        logging.warning(f"Webhook remove failed: {e}")
+        logging.error(f"Webhook error: {e}")
 
-    # ставим новый webhook
-    bot.set_webhook(url=WEBHOOK_URL)
-    logging.info(f"Webhook set: {WEBHOOK_URL}")
-
-# =========================
-# MAIN
-# =========================
 
 if __name__ == "__main__":
+    logging.info("BOOT INIT")
 
-    # старт Telegram bot thread (NO polling!)
-    threading.Thread(target=start_bot).start()
+    set_webhook()
 
-    # старт монитора
-    threading.Thread(target=monitor_loop, daemon=True).start()
-    logging.info("MONITOR STARTED")
+    # монитор в отдельном потоке
+    t = threading.Thread(target=monitor_loop, daemon=True)
+    t.start()
 
-    # старт Flask
     logging.info(f"FLASK STARTING ON PORT {PORT}")
     app.run(host="0.0.0.0", port=PORT)
