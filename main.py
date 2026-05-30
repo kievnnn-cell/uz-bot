@@ -1,194 +1,121 @@
 import os
-import time
 import telebot
 from flask import Flask, request
 
-TOKEN = os.getenv("TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+# =====================
+# CONFIG
+# =====================
 
-bot = telebot.TeleBot(TOKEN, threaded=False)
-app = Flask(__name__)
-
-# ---------------- DEBUG WEBHOOK ----------------
-def fix_webhook():
-    url = f"{WEBHOOK_URL}/{TOKEN}"
-
-    try:
-        info = bot.get_webhook_info()
-        print("CURRENT WEBHOOK:", info.url)
-
-        if info.url != url:
-            print("FIXING WEBHOOK...")
-            bot.remove_webhook()
-            time.sleep(1)
-            bot.set_webhook(url=url)
-
-        print("WEBHOOK OK:", url)
-
-    except Exception as e:
-        print("WEBHOOK ERROR:", e)
-
-# ---------------- START ----------------
-user_state = {}
-
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.send_message(
-        message.chat.id,
-        "🚆 Бот живой. Введите маршрут:\nKyiv → Lviv → 2026-06-01"
-    )
-
-@bot.message_handler(content_types=['text'])
-def text(message):
-    bot.send_message(message.chat.id, "Получено: " + message.text)
-
-# ---------------- WEBHOOK ----------------
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
-    bot.process_new_updates([update])
-    return "OK"
-
-@app.route("/")
-def home():
-    return "OK"
-
-# ---------------- START SERVER ----------------
-if __name__ == "__main__":
-    print("BOT STARTED")
-
-    # 💥 ключевой момент — перед стартом всегда чинит webhook
-    fix_webhook()
-
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)import os
-import time
-import telebot
-from telebot import types
-from flask import Flask, request
-
-# ---------------- CONFIG ----------------
-TOKEN = os.getenv("TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+TOKEN = os.getenv("BOT_TOKEN")  # <- В Render добавляешь BOT_TOKEN
+WEBHOOK_HOST = os.getenv("WEBHOOK_URL")  # например: https://your-app.onrender.com
 
 if not TOKEN:
-    raise Exception("TOKEN is not set in environment variables")
+    raise Exception("BOT_TOKEN is not set in environment variables")
 
-if not WEBHOOK_URL:
-    raise Exception("WEBHOOK_URL is not set in environment variables")
-
-bot = telebot.TeleBot(TOKEN, threaded=False)
+bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 app = Flask(__name__)
 
-# ---------------- SIMPLE STATE ----------------
+# =====================
+# SIMPLE STATE STORAGE (v2 FSM)
+# =====================
+
 user_state = {}
 
-# ---------------- WEBHOOK SAFE SETUP ----------------
-def set_webhook():
-    url = f"{WEBHOOK_URL}/{TOKEN}"
+STATE_START = "start"
+STATE_ROUTE = "route_input"
 
-    try:
-        bot.remove_webhook()
-        time.sleep(1)
-        bot.set_webhook(url=url)
-        print("WEBHOOK SET:", url)
-    except Exception as e:
-        print("WEBHOOK ERROR:", e)
+# =====================
+# START COMMAND
+# =====================
 
-# ---------------- START ----------------
 @bot.message_handler(commands=['start'])
 def start(message):
-    chat_id = message.chat.id
-
-    user_state[chat_id] = "waiting_route"
+    user_id = message.chat.id
+    user_state[user_id] = STATE_START
 
     bot.send_message(
-        chat_id,
-        "🚆 Привет! Я бот поиска маршрутов\n\n"
-        "Введите маршрут:\n"
-        "Kyiv → Lviv → 2026-06-01"
+        user_id,
+        "Привет! Я бот поиска маршрутов 🚆\nВыбери действие:"
     )
 
-# ---------------- TEXT HANDLER ----------------
+# =====================
+# TEXT HANDLER (STATE MACHINE)
+# =====================
+
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
-    chat_id = message.chat.id
+    user_id = message.chat.id
     text = message.text.strip()
 
-    state = user_state.get(chat_id)
+    state = user_state.get(user_id, STATE_START)
 
-    # STEP 1: ждём маршрут
-    if state == "waiting_route":
+    # ---- START STATE ----
+    if state == STATE_START:
+        if "маршрут" in text.lower() or "поиск" in text.lower():
+            user_state[user_id] = STATE_ROUTE
+            bot.send_message(user_id, "Введите маршрут:\nФормат: Kyiv → Lviv → 2026-06-01")
+        else:
+            bot.send_message(user_id, "Нажмите /start и выберите действие 🚆")
+        return
 
-        parts = [p.strip() for p in text.split("→")]
+    # ---- ROUTE INPUT STATE ----
+    if state == STATE_ROUTE:
+        try:
+            parts = text.split("→")
 
-        if len(parts) != 3:
-            bot.send_message(chat_id, "❌ Формат: Kyiv → Lviv → 2026-06-01")
-            return
+            if len(parts) != 3:
+                bot.send_message(user_id, "❌ Неверный формат!\nПример: Kyiv → Lviv → 2026-06-01")
+                return
 
-        from_city, to_city, date = parts
+            from_city = parts[0].strip()
+            to_city = parts[1].strip()
+            date = parts[2].strip()
 
-        user_state[chat_id] = {
-            "step": "ready",
-            "from": from_city,
-            "to": to_city,
-            "date": date
-        }
+            # reset state
+            user_state[user_id] = STATE_START
 
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔍 Найти билеты", callback_data="search"))
-        markup.add(types.InlineKeyboardButton("📅 Расписание", callback_data="schedule"))
-        markup.add(types.InlineKeyboardButton("🔄 Новый маршрут", callback_data="reset"))
+            bot.send_message(
+                user_id,
+                f"🔎 Ищу маршрут...\n\n"
+                f"🚆 {from_city} → {to_city}\n📅 {date}\n\n"
+                f"✔️ (тут позже будет API поиск)"
+            )
 
-        bot.send_message(
-            chat_id,
-            f"🚆 Маршрут принят:\n"
-            f"📍 {from_city} → {to_city}\n"
-            f"📅 {date}\n\n"
-            "Выберите действие:",
-            reply_markup=markup
-        )
+        except Exception as e:
+            bot.send_message(user_id, f"Ошибка обработки: {e}")
 
-# ---------------- CALLBACK BUTTONS ----------------
-@bot.callback_query_handler(func=lambda call: True)
-def callback(call):
-    chat_id = call.message.chat.id
-    data = call.data
+# =====================
+# WEBHOOK ROUTE
+# =====================
 
-    state = user_state.get(chat_id, {})
-
-    if data == "search":
-        bot.send_message(
-            chat_id,
-            f"🔎 Ищу билеты...\n"
-            f"{state.get('from')} → {state.get('to')}\n"
-            f"📅 {state.get('date')}"
-        )
-
-    elif data == "schedule":
-        bot.send_message(chat_id, "📅 Расписание (пока заглушка)")
-
-    elif data == "reset":
-        user_state[chat_id] = "waiting_route"
-        bot.send_message(chat_id, "Введите новый маршрут:\nKyiv → Lviv → 2026-06-01")
-
-    bot.answer_callback_query(call.id)
-
-# ---------------- FLASK WEBHOOK ----------------
-@app.route(f"/{TOKEN}", methods=["POST"])
+@app.route('/webhook', methods=['POST'])
 def webhook():
-    update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
     bot.process_new_updates([update])
     return "OK", 200
 
-@app.route("/")
+# =====================
+# HEALTH CHECK
+# =====================
+
+@app.route('/', methods=['GET'])
 def index():
-    return "Bot is alive", 200
+    return "BOT IS RUNNING", 200
 
-# ---------------- START APP ----------------
+# =====================
+# START APP
+# =====================
+
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+
+    webhook_url = f"{WEBHOOK_HOST}/webhook"
+
     print("BOT STARTED")
+    print("WEBHOOK:", webhook_url)
 
-    set_webhook()
+    bot.remove_webhook()
+    bot.set_webhook(url=webhook_url)
 
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(host="0.0.0.0", port=port)
