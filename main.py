@@ -3,45 +3,31 @@ import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# ---------------- CONFIG ----------------
+# CONFIG
 TOKEN = os.getenv("BOT_TOKEN")
-BASE_URL = os.getenv("BASE_URL")  # https://your-app.onrender.com
-WEBHOOK_PATH = "/webhook"
+BASE_URL = os.getenv("BASE_URL")
 PORT = int(os.getenv("PORT", 10000))
+WEBHOOK_PATH = "/webhook"
 
-# ---------------- LOGGING ----------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
-)
-
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("bot")
 
-# ---------------- BOT ----------------
 application = Application.builder().token(TOKEN).build()
 
-# ---------------- HANDLERS ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 Bot is alive!")
 
 application.add_handler(CommandHandler("start", start))
 
 
-# ---------------- WEBHOOK STARTUP ----------------
 async def post_init(app: Application):
-    """Runs after bot init"""
     url = f"{BASE_URL}{WEBHOOK_PATH}"
     logger.info(f"Setting webhook: {url}")
-    await app.bot.set_webhook(url=url)
+    await app.bot.set_webhook(url)
 
 
-# ---------------- ENTRY ----------------
 if __name__ == "__main__":
-    logger.info("BOOT INIT")
-
     application.post_init = post_init
-
-    logger.info("Starting webhook server...")
 
     application.run_webhook(
         listen="0.0.0.0",
