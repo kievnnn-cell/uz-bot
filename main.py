@@ -1,83 +1,106 @@
 import os
+import time
 import threading
+import logging
 from flask import Flask, request
 import telebot
 
-# =========================
-# CONFIG
-# =========================
+# -----------------------------
+# LOGGING (production-safe)
+# -----------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
 
-TOKEN = os.getenv("BOT_TOKEN")  # только из environment
-if not TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set in environment variables")
+# -----------------------------
+# ENV
+# -----------------------------
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+BASE_URL = os.getenv("BASE_URL")
+PORT = int(os.getenv("PORT", 10000))
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
 
-BASE_URL = os.getenv("BASE_URL")  # например https://your-app.onrender.com
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set")
 
-bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
+bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
+
 app = Flask(__name__)
 
-# =========================
-# BOT LOGIC
-# =========================
-
+# -----------------------------
+# BASIC HANDLERS
+# -----------------------------
 @bot.message_handler(commands=["start"])
 def start(message):
     bot.send_message(
         message.chat.id,
-        "👋 Бот запущен и работает нормально."
+        "🤖 Bot is alive and running on production server."
     )
 
-@bot.message_handler(func=lambda m: True)
+
+@bot.message_handler(content_types=["text"])
 def echo(message):
-    bot.send_message(message.chat.id, f"Ты написал: {message.text}")
+    bot.send_message(message.chat.id, message.text)
 
 
-# =========================
-# FLASK ROUTES (WEBHOOK)
-# =========================
-
-@app.route("/", methods=["GET"])
-def home():
-    return "Bot is alive", 200
-
-
-@app.route(f"/{TOKEN}", methods=["POST"])
+# -----------------------------
+# FLASK ROUTE (WEBHOOK)
+# -----------------------------
+@app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
-    json_str = request.get_data().decode("utf-8")
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
+    try:
+        json_str = request.get_data().decode("utf-8")
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+    except Exception as e:
+        logging.error(f"Webhook error: {e}")
     return "OK", 200
 
 
-# =========================
-# BOT STARTUP
-# =========================
+@app.route("/", methods=["GET", "HEAD"])
+def index():
+    return "Bot is running", 200
 
-def set_webhook():
+
+# -----------------------------
+# SET WEBHOOK
+# -----------------------------
+def setup_webhook():
     if not BASE_URL:
-        print("WARNING: BASE_URL is not set, webhook will not be configured")
+        logging.warning("BASE_URL not set → webhook will NOT be configured")
         return
 
-    webhook_url = f"{BASE_URL}/{TOKEN}"
-    bot.remove_webhook()
-    bot.set_webhook(url=webhook_url)
-    print("Webhook set:", webhook_url)
+    webhook_url = f"{BASE_URL}{WEBHOOK_PATH}"
+
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+        bot.set_webhook(url=webhook_url)
+        logging.info(f"Webhook set to: {webhook_url}")
+    except Exception as e:
+        logging.error(f"Failed to set webhook: {e}")
 
 
+# -----------------------------
+# BOT THREAD (SAFE)
+# -----------------------------
 def run_bot():
-    set_webhook()
-    print("BOT THREAD STARTED")
+    logging.info("BOT THREAD STARTED")
+    setup_webhook()
 
 
-# =========================
-# MAIN
-# =========================
-
+# -----------------------------
+# START APP
+# -----------------------------
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 10000))
+    logging.info("BOOT INIT")
 
-    # бот в отдельном потоке
-    threading.Thread(target=run_bot).start()
+    # start bot logic in background thread
+    thread = threading.Thread(target=run_bot)
+    thread.daemon = True
+    thread.start()
 
-    # flask сервер (Render требует PORT)
-   
+    logging.info(f"FLASK STARTING ON PORT {PORT}")
+
+    app.run(host="0.0.0.0", port=PORT)
