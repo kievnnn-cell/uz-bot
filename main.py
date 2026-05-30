@@ -1,18 +1,16 @@
 import os
+import re
+import sqlite3
 import logging
+import asyncio
 import httpx
-from datetime import datetime, timedelta
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+from datetime import datetime, timedelta
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -23,205 +21,203 @@ BASE_URL = os.getenv("BASE_URL")
 PORT = int(os.getenv("PORT", 10000))
 WEBHOOK_PATH = "/webhook"
 
-UZ_API = "https://booking.uz.gov.ua/en"
+UZ_BASE = "https://booking.uz.gov.ua"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("bot")
 
 app = Application.builder().token(TOKEN).build()
 
+# ---------------- DB ----------------
+conn = sqlite3.connect("watch.db", check_same_thread=False)
+cur = conn.cursor()
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS watches (
+    user_id INTEGER,
+    from_city TEXT,
+    to_city TEXT,
+    from_id TEXT,
+    to_id TEXT,
+    train TEXT,
+    wagon TEXT,
+    date TEXT,
+    active INTEGER DEFAULT 1
+)
+""")
+conn.commit()
+
+
+# ---------------- PARSER ----------------
+def parse(text: str):
+    train = re.search(r"№\s*(\d+)", text)
+    train = train.group(1) if train else None
+
+    wagon = "купе" if "купе" in text.lower() else "плацкарт"
+
+    date = re.search(r"(\d{2}\.\d{2}\.\d{4})", text)
+    date = date.group(1) if date else None
+
+    route = text.split("№")[-1]
+    route = route.split(",")[0]
+    parts = re.split(r"[–-]", route)
+
+    if len(parts) < 2:
+        return None
+
+    return {
+        "train": train,
+        "from_city": parts[0].strip(),
+        "to_city": parts[1].strip(),
+        "wagon": wagon,
+        "date": date
+    }
+
+
+# ---------------- STATION API ----------------
+async def get_station(client, name):
+    try:
+        r = await client.get(f"{UZ_BASE}/en/purchase/station/{name[:3]}")
+        data = r.json()
+        if data.get("value"):
+            return data["value"][0]["station_id"]
+    except:
+        return None
+
+
+# ---------------- SEARCH ----------------
+async def search_uz(client, state):
+    r = await client.post(
+        f"{UZ_BASE}/en/purchase/search/",
+        data={
+            "from": state["from_id"],
+            "to": state["to_id"],
+            "date": state["date"]
+        }
+    )
+    return r.json()
+
 
 # ---------------- START ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
+    await update.message.reply_text(
+        "🚆 Отправь:\n"
+        "поезд №81 Киев–Ивано-Франковск, купе, 31.05.2026"
+    )
+
+
+# ---------------- CREATE WATCH ----------------
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user_id = update.effective_user.id
+
+    parsed = parse(text)
+
+    if not parsed:
+        await update.message.reply_text("❌ Неверный формат")
+        return
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        from_id = await get_station(client, parsed["from_city"])
+        to_id = await get_station(client, parsed["to_city"])
+
+    if not from_id or not to_id:
+        await update.message.reply_text("❌ Не нашёл станции")
+        return
+
+    cur.execute("""
+        INSERT INTO watches (
+            user_id, from_city, to_city,
+            from_id, to_id,
+            train, wagon, date, active
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+    """, (
+        user_id,
+        parsed["from_city"],
+        parsed["to_city"],
+        from_id,
+        to_id,
+        parsed["train"],
+        parsed["wagon"],
+        parsed["date"]
+    ))
+    conn.commit()
 
     await update.message.reply_text(
-        "🚆 Введи маршрут:\n"
-        "пример: Киев–Ивано-Франковск"
+        "✅ Мониторинг запущен.\n"
+        "Сообщу, когда появятся билеты."
     )
 
 
-# ---------------- ROUTE PARSER ----------------
-def parse_route(text: str):
-    parts = text.split("–")
-    if len(parts) < 2:
-        return None, None
-    return parts[0].strip(), parts[1].strip()
+# ---------------- MONITOR JOB ----------------
+async def check_jobs(context: ContextTypes.DEFAULT_TYPE):
+    cur.execute("SELECT * FROM watches WHERE active=1")
+    rows = cur.fetchall()
 
+    async with httpx.AsyncClient(timeout=20) as client:
+        for row in rows:
+            (
+                user_id,
+                from_city,
+                to_city,
+                from_id,
+                to_id,
+                train,
+                wagon,
+                date,
+                active
+            ) = row
 
-# ---------------- STEP 1: ROUTE ----------------
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    frm, to = parse_route(update.message.text)
-
-    if not frm or not to:
-        await update.message.reply_text("❌ Формат: Киев–Ивано-Франковск")
-        return
-
-    context.user_data["from"] = frm
-    context.user_data["to"] = to
-
-    keyboard = [
-        [InlineKeyboardButton("📅 Сегодня", callback_data="date_0")],
-        [InlineKeyboardButton("📅 Завтра", callback_data="date_1")],
-        [InlineKeyboardButton("📅 +2 дня", callback_data="date_2")],
-    ]
-
-    await update.message.reply_text(
-        "Выбери дату:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# ---------------- DATE ----------------
-def get_date(offset: int):
-    return (datetime.now() + timedelta(days=offset)).strftime("%d.%m.%Y")
-
-
-# ---------------- STEP 2: DATE ----------------
-async def date_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    offset = int(q.data.split("_")[1])
-    context.user_data["date"] = get_date(offset)
-
-    await q.edit_message_text("🔎 Ищу поезда...")
-
-    await search_trains(q, context.user_data)
-
-
-# ---------------- UZ SEARCH ----------------
-async def search_trains(query, state):
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.post(
-                "https://booking.uz.gov.ua/en/purchase/search/",
-                data={
-                    "from": state["from"],
-                    "to": state["to"],
-                    "date": state["date"],
-                },
-            )
-    except Exception as e:
-        logger.error(f"UZ ERROR: {e}")
-        await query.message.reply_text("❌ Ошибка подключения к УЗ")
-        return
-
-    data = r.json()
-
-    if "value" not in data:
-        await query.message.reply_text("❌ Нет данных УЗ")
-        return
-
-    trains = data["value"][:5]
-
-    keyboard = [
-        [InlineKeyboardButton(f"🚆 №{t.get('num')}", callback_data=f"train_{t.get('num')}")]
-        for t in trains
-    ]
-
-    context = query.application
-    query.application.bot_data["trains"] = trains
-
-    await query.message.reply_text(
-        "Выбери поезд:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# ---------------- STEP 3: TRAIN ----------------
-async def train_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    train_num = q.data.split("_")[1]
-    context.user_data["train"] = train_num
-
-    keyboard = [
-        [InlineKeyboardButton("🚇 Купе", callback_data="wagon_coupe")],
-        [InlineKeyboardButton("🪑 Плацкарт", callback_data="wagon_plats")],
-    ]
-
-    await q.edit_message_text(
-        f"Поезд №{train_num}\nВыбери тип вагона:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# ---------------- STEP 4: WAGON ----------------
-async def wagon_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    wagon = "купе" if q.data == "wagon_coupe" else "плацкарт"
-    context.user_data["wagon"] = wagon
-
-    await q.edit_message_text("🔎 Получаю данные...")
-
-    await final_result(q, context.user_data)
-
-
-# ---------------- FINAL RESULT ----------------
-async def final_result(query, state):
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.post(
-                "https://booking.uz.gov.ua/en/purchase/search/",
-                data={
-                    "from": state["from"],
-                    "to": state["to"],
-                    "date": state["date"],
-                },
-            )
-    except Exception as e:
-        logger.error(f"UZ FINAL ERROR: {e}")
-        await query.message.reply_text("❌ Ошибка УЗ")
-        return
-
-    data = r.json()
-
-    if "value" not in data:
-        await query.message.reply_text("❌ Нет данных")
-        return
-
-    msg = "🚆 Результат:\n\n"
-    found = False
-
-    for t in data["value"]:
-        if str(t.get("num")) != state.get("train"):
-            continue
-
-        found = True
-        msg += f"🚆 Поезд №{t.get('num')}\n"
-        msg += f"{t.get('from')} → {t.get('to')}\n\n"
-
-        for tp in t.get("types", []):
-            if state["wagon"] not in tp.get("title", "").lower():
+            try:
+                data = await search_uz(client, {
+                    "from_id": from_id,
+                    "to_id": to_id,
+                    "date": date
+                })
+            except:
                 continue
 
-            msg += f"• {tp.get('title')}: {tp.get('places')}\n"
+            if "value" not in data:
+                continue
 
-    if not found:
-        msg = "❌ Поезд не найден"
+            for t in data["value"]:
+                if train and str(t.get("num")) != train:
+                    continue
 
-    await query.message.reply_text(msg)
+                for tp in t.get("types", []):
+                    if wagon not in tp.get("title", "").lower():
+                        continue
+
+                    places = tp.get("places")
+
+                    if places and places != "0":
+                        await context.bot.send_message(
+                            user_id,
+                            f"🚨 БИЛЕТ НАЙДЕН!\n\n"
+                            f"Поезд №{train}\n"
+                            f"{from_city} → {to_city}\n"
+                            f"{wagon}\n"
+                            f"Дата: {date}\n"
+                            f"Мест: {places}"
+                        )
+
+                        cur.execute(
+                            "UPDATE watches SET active=0 WHERE user_id=? AND train=?",
+                            (user_id, train)
+                        )
+                        conn.commit()
 
 
 # ---------------- WEBHOOK ----------------
 async def post_init(app: Application):
     url = f"{BASE_URL}{WEBHOOK_PATH}"
-
-    await app.bot.delete_webhook(drop_pending_updates=True)
-    await app.bot.set_webhook(url=url)
-
-    logger.info(f"Webhook set: {url}")
+    await app.bot.set_webhook(url=url, drop_pending_updates=True)
 
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-app.add_handler(CallbackQueryHandler(date_cb, pattern="date_"))
-app.add_handler(CallbackQueryHandler(train_cb, pattern="train_"))
-app.add_handler(CallbackQueryHandler(wagon_cb, pattern="wagon_"))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+
+app.job_queue.run_repeating(check_jobs, interval=120, first=10)
 
 app.post_init = post_init
 
@@ -233,6 +229,4 @@ if __name__ == "__main__":
         port=PORT,
         url_path=WEBHOOK_PATH,
         webhook_url=f"{BASE_URL}{WEBHOOK_PATH}",
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES,
     )
