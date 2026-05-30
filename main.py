@@ -1,15 +1,15 @@
 import os
 import logging
-import asyncio
-from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ---------------- CONFIG ----------------
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")  # НЕ ХРАНИ В КОДЕ
 BASE_URL = os.getenv("BASE_URL")  # https://your-app.onrender.com
-WEBHOOK_PATH = "/webhook"
 PORT = int(os.getenv("PORT", 10000))
+
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_URL = f"{BASE_URL}{WEBHOOK_PATH}"
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(
@@ -19,58 +19,36 @@ logging.basicConfig(
 
 logger = logging.getLogger("bot")
 
-# ---------------- FLASK ----------------
-app = Flask(__name__)
-
 # ---------------- BOT ----------------
 application = Application.builder().token(TOKEN).build()
-
 
 # ---------------- HANDLERS ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 Bot is alive!")
 
-
 application.add_handler(CommandHandler("start", start))
 
 
-# ---------------- WEBHOOK ROUTE ----------------
-@app.route(WEBHOOK_PATH, methods=["POST"])
-def webhook():
-    """Telegram sends updates here"""
-    data = request.get_json(force=True)
-    update = Update.de_json(data, application.bot)
-
-    # IMPORTANT: correct async-safe execution
-    asyncio.run(application.process_update(update))
-
-    return "OK"
-
-
-@app.route("/", methods=["GET"])
-def index():
-    return "Bot is running"
-
-
-# ---------------- SET WEBHOOK ----------------
-async def set_webhook():
-    url = f"{BASE_URL}{WEBHOOK_PATH}"
-    logger.info(f"Setting webhook: {url}")
-    await application.bot.set_webhook(url=url)
-
-
-# ---------------- START APP ----------------
-async def run():
+# ---------------- MAIN ----------------
+def main():
     logger.info("BOOT INIT")
 
-    await application.initialize()
-    await set_webhook()
+    if not TOKEN:
+        raise RuntimeError("BOT_TOKEN is not set")
+    if not BASE_URL:
+        raise RuntimeError("BASE_URL is not set")
 
-    logger.info("Bot ready (webhook mode)")
+    logger.info(f"Webhook URL: {WEBHOOK_URL}")
 
-# ---------------- ENTRY ----------------
+    # ❗ ВАЖНО: НЕ создаём event loop вручную
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=WEBHOOK_PATH,
+        webhook_url=WEBHOOK_URL,
+        drop_pending_updates=True
+    )
+
+
 if __name__ == "__main__":
-    asyncio.run(run())
-
-    logger.info("Flask starting...")
-    app.run(host="0.0.0.0", port=PORT)
+    main()
