@@ -1,12 +1,12 @@
 import os
 import time
 import threading
-from flask import Flask
 import telebot
+from flask import Flask
 
-# =====================
+# =========================
 # CONFIG
-# =====================
+# =========================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -17,27 +17,27 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 app = Flask(__name__)
 
-# =====================
-# FLASK ROUTE (Render healthcheck)
-# =====================
+# =========================
+# FLASK (Render healthcheck)
+# =========================
 
 @app.route("/")
 def home():
     return "BOT IS RUNNING 🚆", 200
 
 
-# =====================
-# TELEGRAM HANDLERS
-# =====================
+# =========================
+# TELEGRAM BOT HANDLERS
+# =========================
 
 @bot.message_handler(commands=["start"])
 def start(message):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
 
-    btn1 = telebot.types.KeyboardButton("🚆 Маршруты")
-    btn2 = telebot.types.KeyboardButton("ℹ️ Помощь")
-
-    markup.add(btn1, btn2)
+    markup.add(
+        telebot.types.KeyboardButton("🚆 Маршруты"),
+        telebot.types.KeyboardButton("ℹ️ Помощь")
+    )
 
     bot.send_message(
         message.chat.id,
@@ -47,7 +47,7 @@ def start(message):
 
 
 @bot.message_handler(func=lambda message: True)
-def handle_all(message):
+def handler(message):
     text = message.text.lower()
 
     if "маршрут" in text:
@@ -55,12 +55,12 @@ def handle_all(message):
     elif "помощь" in text:
         bot.send_message(message.chat.id, "Я помогу тебе найти маршрут 🚆")
     else:
-        bot.send_message(message.chat.id, "Выбери кнопку меню 👇")
+        bot.send_message(message.chat.id, "Используй кнопки меню 👇")
 
 
-# =====================
-# BOT START FUNCTION
-# =====================
+# =========================
+# BOT RUN LOOP
+# =========================
 
 def run_bot():
     print("BOT THREAD STARTED")
@@ -71,7 +71,8 @@ def run_bot():
 
         time.sleep(1)
 
-        print("STARTING POLLING...")
+        print("STARTING POLLING 🚆")
+
         bot.infinity_polling(
             skip_pending=True,
             timeout=30,
@@ -79,22 +80,23 @@ def run_bot():
         )
 
     except Exception as e:
-        print("BOT ERROR:", e)
+        print("BOT ERROR:", str(e))
         time.sleep(5)
         run_bot()
 
 
-# =====================
-# MAIN ENTRY POINT
-# =====================
+# =========================
+# MAIN
+# =========================
 
 if __name__ == "__main__":
     print("BOOT INIT")
 
-    # Bot thread
-    t = threading.Thread(target=run_bot)
-    t.start()
+    # Start bot in background thread
+    bot_thread = threading.Thread(target=run_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
 
-    # Flask server
+    # Start Flask
     print("FLASK STARTING...")
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
