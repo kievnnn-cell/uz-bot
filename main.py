@@ -1,126 +1,131 @@
 import os
+import time
 import telebot
 from telebot import types
 from flask import Flask, request
 
+# ---------------- CONFIG ----------------
 TOKEN = os.getenv("TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+if not TOKEN:
+    raise Exception("TOKEN is not set in environment variables")
+
+if not WEBHOOK_URL:
+    raise Exception("WEBHOOK_URL is not set in environment variables")
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-# память состояний (простая версия)
+# ---------------- SIMPLE STATE ----------------
 user_state = {}
+
+# ---------------- WEBHOOK SAFE SETUP ----------------
+def set_webhook():
+    url = f"{WEBHOOK_URL}/{TOKEN}"
+
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+        bot.set_webhook(url=url)
+        print("WEBHOOK SET:", url)
+    except Exception as e:
+        print("WEBHOOK ERROR:", e)
 
 # ---------------- START ----------------
 @bot.message_handler(commands=['start'])
 def start(message):
-    user_id = message.chat.id
-    user_state[user_id] = "waiting_route"
+    chat_id = message.chat.id
 
-    markup = types.ReplyKeyboardRemove()
+    user_state[chat_id] = "waiting_route"
 
     bot.send_message(
-        user_id,
+        chat_id,
         "🚆 Привет! Я бот поиска маршрутов\n\n"
-        "Введите маршрут в формате:\n"
-        "Kyiv → Lviv → 2026-06-01",
-        reply_markup=markup
+        "Введите маршрут:\n"
+        "Kyiv → Lviv → 2026-06-01"
     )
 
 # ---------------- TEXT HANDLER ----------------
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
-    user_id = message.chat.id
-    text = message.text
+    chat_id = message.chat.id
+    text = message.text.strip()
 
-    state = user_state.get(user_id)
+    state = user_state.get(chat_id)
 
     # STEP 1: ждём маршрут
     if state == "waiting_route":
 
-        try:
-            parts = [p.strip() for p in text.split("→")]
+        parts = [p.strip() for p in text.split("→")]
 
-            if len(parts) != 3:
-                bot.send_message(user_id, "❌ Неверный формат. Пример:\nKyiv → Lviv → 2026-06-01")
-                return
+        if len(parts) != 3:
+            bot.send_message(chat_id, "❌ Формат: Kyiv → Lviv → 2026-06-01")
+            return
 
-            from_city, to_city, date = parts
+        from_city, to_city, date = parts
 
-            user_state[user_id] = {
-                "step": "ready",
-                "from": from_city,
-                "to": to_city,
-                "date": date
-            }
+        user_state[chat_id] = {
+            "step": "ready",
+            "from": from_city,
+            "to": to_city,
+            "date": date
+        }
 
-            # inline кнопки
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("🔍 Найти билеты", callback_data="search"))
-            markup.add(types.InlineKeyboardButton("📅 Расписание", callback_data="schedule"))
-            markup.add(types.InlineKeyboardButton("🔄 Новый маршрут", callback_data="reset"))
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔍 Найти билеты", callback_data="search"))
+        markup.add(types.InlineKeyboardButton("📅 Расписание", callback_data="schedule"))
+        markup.add(types.InlineKeyboardButton("🔄 Новый маршрут", callback_data="reset"))
 
-            bot.send_message(
-                user_id,
-                f"🚆 Маршрут принят:\n"
-                f"📍 {from_city} → {to_city}\n"
-                f"📅 {date}\n\n"
-                f"Выберите действие:",
-                reply_markup=markup
-            )
+        bot.send_message(
+            chat_id,
+            f"🚆 Маршрут принят:\n"
+            f"📍 {from_city} → {to_city}\n"
+            f"📅 {date}\n\n"
+            "Выберите действие:",
+            reply_markup=markup
+        )
 
-        except Exception as e:
-            bot.send_message(user_id, f"Ошибка: {e}")
-
-# ---------------- BUTTONS ----------------
+# ---------------- CALLBACK BUTTONS ----------------
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
-    user_id = call.message.chat.id
+    chat_id = call.message.chat.id
     data = call.data
 
-    state = user_state.get(user_id, {})
+    state = user_state.get(chat_id, {})
 
     if data == "search":
         bot.send_message(
-            user_id,
-            f"🔎 Ищу билеты:\n{state.get('from')} → {state.get('to')} ({state.get('date')})\n\n"
-            "⚙️ (здесь позже подключим API)"
+            chat_id,
+            f"🔎 Ищу билеты...\n"
+            f"{state.get('from')} → {state.get('to')}\n"
+            f"📅 {state.get('date')}"
         )
 
     elif data == "schedule":
-        bot.send_message(
-            user_id,
-            "📅 Показываю расписание...\n(пока заглушка, добавим API позже)"
-        )
+        bot.send_message(chat_id, "📅 Расписание (пока заглушка)")
 
     elif data == "reset":
-        user_state[user_id] = "waiting_route"
-        bot.send_message(user_id, "Введите новый маршрут:\nKyiv → Lviv → 2026-06-01")
+        user_state[chat_id] = "waiting_route"
+        bot.send_message(chat_id, "Введите новый маршрут:\nKyiv → Lviv → 2026-06-01")
 
     bot.answer_callback_query(call.id)
 
-# ---------------- WEBHOOK ----------------
+# ---------------- FLASK WEBHOOK ----------------
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
-    json_str = request.get_data().decode("utf-8")
-    update = telebot.types.Update.de_json(json_str)
+    update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
     bot.process_new_updates([update])
     return "OK", 200
 
-# ---------------- HEALTH ----------------
 @app.route("/")
 def index():
     return "Bot is alive", 200
 
 # ---------------- START APP ----------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-
-    bot.remove_webhook()
-    bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
-
     print("BOT STARTED")
-    print("WEBHOOK SET:", WEBHOOK_URL)
 
-    app.run(host="0.0.0.0", port=port)
+    set_webhook()
+
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
