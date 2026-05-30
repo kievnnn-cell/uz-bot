@@ -1,60 +1,80 @@
 import os
-from flask import Flask, request
+import threading
+from flask import Flask
 import telebot
 
-TOKEN = os.environ.get("BOT_TOKEN")
-if not TOKEN:
-    raise Exception("BOT_TOKEN missing")
+# =========================
+# CONFIG
+# =========================
 
-bot = telebot.TeleBot(TOKEN)
+TOKEN = os.getenv("BOT_TOKEN")
+
+if not TOKEN:
+    raise ValueError("BOT_TOKEN is not set in environment variables")
+
+bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
+
+# =========================
+# FLASK (for Render healthcheck)
+# =========================
+
 app = Flask(__name__)
 
-# Render URL
-BASE_URL = os.environ.get("RENDER_EXTERNAL_URL")
+@app.route("/")
+def home():
+    return "BOT IS RUNNING", 200
 
-if not BASE_URL:
-    raise Exception("RENDER_EXTERNAL_URL missing")
 
-# webhook endpoint БЕЗ токена в URL
-WEBHOOK_PATH = f"/{TOKEN}"
-WEBHOOK_URL = BASE_URL + WEBHOOK_PATH
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
-# reset webhook
-bot.remove_webhook()
-bot.set_webhook(url=WEBHOOK_URL)
 
-print("BOT STARTED")
-print("WEBHOOK ACTIVE")
+# =========================
+# BOT HANDLERS
+# =========================
 
-# ================= HANDLERS =================
-
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=["start"])
 def start(message):
-    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("🚆 Маршруты", "ℹ️ Помощь")
-
     bot.send_message(
         message.chat.id,
-        "Привет! Я бот поиска маршрутов 🚆\nВыбери действие:",
-        reply_markup=kb
+        "🚆 <b>Привет! Я бот поиска маршрутов</b>\n\nВыбери действие:"
+    )
+
+@bot.message_handler(commands=["help"])
+def help_cmd(message):
+    bot.send_message(
+        message.chat.id,
+        "ℹ️ Доступные команды:\n/start - запуск\n/help - помощь"
+    )
+
+# пример кнопочного меню (V4 база UI)
+@bot.message_handler(func=lambda m: True)
+def echo(message):
+    bot.send_message(
+        message.chat.id,
+        f"Ты написал: <b>{message.text}</b>"
     )
 
 
-@bot.message_handler(func=lambda m: True)
-def handler(message):
-    if message.text == "🚆 Маршруты":
-        bot.send_message(message.chat.id, "Введите маршрут: Киев → Львов")
+# =========================
+# STARTUP
+# =========================
 
-    elif message.text == "ℹ️ Помощь":
-        bot.send_message(message.chat.id, "Просто выбери маршрут и отправь направление")
+def run_bot():
+    print("BOT STARTING...")
+    print("TOKEN LOADED:", bool(TOKEN))
 
-    else:
-        bot.send_message(message.chat.id, "Нажми /start")
+    # ВАЖНО: убираем webhook полностью (иначе 409 ошибка снова)
+    bot.remove_webhook()
+
+    print("BOT STARTED - polling now")
+    bot.infinity_polling(skip_pending=True)
 
 
-# ================= WEBHOOK =================
+if __name__ == "__main__":
+    # Flask в отдельном потоке
+    threading.Thread(target=run_flask).start()
 
-@app.route(WEBHOOK_PATH, methods=["POST"])
-def webhook():
-    update = telebot.types.Update.de_json(request.data.decode("utf-8"))
-    bot
+    # Bot в главном потоке
+    run_bot()
