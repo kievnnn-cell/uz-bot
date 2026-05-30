@@ -3,26 +3,29 @@ import threading
 from flask import Flask
 import telebot
 
-# =========================
+# =====================
 # CONFIG
-# =========================
+# =====================
 
 TOKEN = os.getenv("BOT_TOKEN")
 
 if not TOKEN:
-    raise ValueError("BOT_TOKEN is not set in environment variables")
+    raise Exception("BOT_TOKEN is missing in environment variables")
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
-# =========================
-# FLASK (for Render healthcheck)
-# =========================
+print("BOT STARTING...")
+print("TOKEN LOADED:", bool(TOKEN))
+
+# =====================
+# FLASK SERVER
+# =====================
 
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "BOT IS RUNNING", 200
+    return "OK - BOT IS RUNNING", 200
 
 
 def run_flask():
@@ -30,9 +33,9 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 
-# =========================
-# BOT HANDLERS
-# =========================
+# =====================
+# BOT LOGIC
+# =====================
 
 @bot.message_handler(commands=["start"])
 def start(message):
@@ -41,39 +44,50 @@ def start(message):
         "🚆 <b>Привет! Я бот поиска маршрутов</b>\n\nВыбери действие:"
     )
 
+
 @bot.message_handler(commands=["help"])
 def help_cmd(message):
     bot.send_message(
         message.chat.id,
-        "ℹ️ Доступные команды:\n/start - запуск\n/help - помощь"
+        "ℹ️ /start - запуск\n/help - помощь"
     )
 
-# пример кнопочного меню (V4 база UI)
+
 @bot.message_handler(func=lambda m: True)
-def echo(message):
+def default_handler(message):
     bot.send_message(
         message.chat.id,
-        f"Ты написал: <b>{message.text}</b>"
+        f"Ты написал: {message.text}"
     )
 
 
-# =========================
-# STARTUP
-# =========================
+# =====================
+# START BOT (CRITICAL PART)
+# =====================
 
 def run_bot():
-    print("BOT STARTING...")
-    print("TOKEN LOADED:", bool(TOKEN))
+    try:
+        # ВАЖНО: убираем webhook ВСЕГДА
+        bot.remove_webhook()
 
-    # ВАЖНО: убираем webhook полностью (иначе 409 ошибка снова)
-    bot.remove_webhook()
+        print("BOT STARTED - POLLING MODE")
 
-    print("BOT STARTED - polling now")
-    bot.infinity_polling(skip_pending=True)
+        bot.infinity_polling(
+            skip_pending=True,
+            timeout=30,
+            long_polling_timeout=30
+        )
 
+    except Exception as e:
+        print("BOT ERROR:", e)
+
+
+# =====================
+# MAIN
+# =====================
 
 if __name__ == "__main__":
-    # Flask в отдельном потоке
+    # Flask в фоне
     threading.Thread(target=run_flask).start()
 
     # Bot в главном потоке
